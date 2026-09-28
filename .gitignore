@@ -1,0 +1,12 @@
+/.bundle/
+/.devcontainer/compose.runtime.yaml
+/.env
+/config/master.key
+/config/credentials.yml.enc
+/log/*
+!/log/.keep
+/tmp/*
+!/tmp/.keep
+/vendor/bundle/
+/MEMORY.md
+/TASKS.md
