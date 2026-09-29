@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+
+export BUNDLE_FROZEN=true
+bundle check
+bundle exec standardrb
+RAILS_ENV=test bin/rails test
