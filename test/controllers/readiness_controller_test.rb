@@ -1,8 +1,21 @@
 require "test_helper"
+require "minitest/mock"
 require "tmpdir"
 
 class ReadinessControllerTest < ActionDispatch::IntegrationTest
   self.use_transactional_tests = false
+
+  test "slow database acquisition returns bounded generic 503 and can recover" do
+    slow_pool = Object.new
+    slow_pool.define_singleton_method(:with_connection) { |&block| sleep 4 }
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    ActiveRecord::Base.stub(:connection_pool, slow_pool) { get "/ready" }
+    assert_response :service_unavailable
+    assert_equal "not ready\n", response.body
+    assert_operator Process.clock_gettime(Process::CLOCK_MONOTONIC) - started, :<, 3
+    get "/ready"
+    assert_response :success
+  end
 
   test "real PostgreSQL connection and migration context are ready" do
     ActiveRecord::Base.connection_pool.with_connection { |connection| assert_equal "PostgreSQL", connection.adapter_name }
