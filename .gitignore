@@ -8,5 +8,8 @@
 /tmp/*
 !/tmp/.keep
 /vendor/bundle/
+/app/assets/builds/*
+!/app/assets/builds/.keep
+/public/assets/
 /MEMORY.md
 /TASKS.md

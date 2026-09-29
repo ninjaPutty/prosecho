@@ -22,6 +22,7 @@ module Prosecho
   class Application < Rails::Application
     # Initialize configuration defaults for originally generated Rails version.
     config.load_defaults 8.1
+    config.active_record.primary_key = :uuid
 
     # Please, add to the `ignore` list any other `lib` subdirectories that do
     # not contain `.rb` files, or that should not be reloaded or eager loaded.
@@ -38,5 +39,6 @@ module Prosecho
 
     # Don't generate system test files.
     config.generators.system_tests = nil
+    config.generators.orm :active_record, primary_key_type: :uuid
   end
 end
