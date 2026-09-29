@@ -70,3 +70,29 @@ any development server started before the Tailwind install to refresh its asset
 load path. No browser visual test or other OS/runtime test was run. Cloudflare
 and production deployment are deferred; the Beelink VM remains nonadmitted and
 does not run this application.
+
+## Production Image
+
+The root `Dockerfile` builds a Ruby 3.4.7 / Rails 8.1.3.1 production image
+with a frozen bundle and precompiled Propshaft assets. The build stage fetches
+the pinned public Git gems; the runtime stage excludes development/test gems,
+Git tooling, source-control metadata, and credentials. It runs as a non-root
+user on port 3000. `/up` is the Rails boot health endpoint, not a database
+readiness check. Do not pass real secrets as build arguments or copy them into
+the build context; provide runtime secrets through deployment configuration.
+
+On x86_64 Linux with rootless Podman, test without a database or host mounts:
+
+```sh
+podman build -t localhost/prosecho:image-test .
+sh test/production_image.sh localhost/prosecho:image-test
+```
+
+Run `bin/check` inside the Dev Container.
+
+The image smoke test uses an isolated network and a throwaway runtime key.
+The local production image build, precompile, and smoke test passed, including
+the public page and its fingerprinted Tailwind CSS; `/lookbook` returned 404.
+First-deploy Kamal, registry, and production PostgreSQL configuration are not
+implemented. This image is not yet a production deployment target; Nix-host
+compatibility and other architectures still require validation.
