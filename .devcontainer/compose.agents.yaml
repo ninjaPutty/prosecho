@@ -1,0 +1,10 @@
+# Optional: a dedicated Drive-only secrets file, never the full host secret store.
+services:
+  app:
+    volumes:
+      - type: bind
+        source: ${PROSECHO_AGENT_SECRETS_FILE:?Set a dedicated Drive-only secrets file path}
+        target: /home/vscode/.config/opencode/secrets.env
+        read_only: true
+        bind:
+          create_host_path: false
