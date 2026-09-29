@@ -1,0 +1,27 @@
+# Explicit opt-in only. Never add this file to the ordinary devcontainer config.
+services:
+  deploy:
+    profiles: [deploy]
+    build:
+      context: .
+      dockerfile: Dockerfile.deploy
+    command: sleep infinity
+    working_dir: /prosecho
+    env_file:
+      - ${HOME}/.local/share/menloparking/prosecho/runtime.env
+    environment:
+      DOCKER_HOST: ssh://deploy@prosecho-deploy-cloudflare
+      SSH_AUTH_SOCK: /run/prosecho/agent.sock
+      PGHOST: postgres
+      PGUSER: postgres
+      PGPASSWORD: postgres
+    volumes:
+      - ..:/prosecho:cached
+      - ${HOME}/.local/share/menloparking/prosecho/agent.sock:/run/prosecho/agent.sock:ro
+      - ${HOME}/.local/share/menloparking/prosecho/creds/deploy.pub:/run/prosecho/deploy.pub:ro
+      - ${HOME}/.local/share/menloparking/prosecho/creds/known_hosts:/run/prosecho/known_hosts:ro
+      - ${HOME}/.local/share/menloparking/prosecho/creds/service-token.json:/run/prosecho/service-token.json:ro
+      - ${HOME}/.local/share/menloparking/prosecho/creds/app.env:/run/prosecho/app.env:ro
+    userns_mode: "keep-id:gid=100"
+    security_opt:
+      - label=disable

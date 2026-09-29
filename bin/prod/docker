@@ -1,0 +1,16 @@
+#!/bin/sh
+set -eu
+# Docker login is CLI-side, unlike builds using the remote DOCKER_HOST.
+if test "${1:-}" = login && test "${2:-}" = 127.0.0.1:5555; then
+  test "${DOCKER_HOST:-}" = ssh://deploy@prosecho-deploy-cloudflare
+  test "$#" = 6
+  test "$3" = -u
+  test "$4" = prosecho
+  test "$5" = -p
+  printf '%s\n' "$6" | ssh prosecho-deploy-cloudflare 'docker login 127.0.0.1:5555 -u prosecho --password-stdin'
+elif test "${1:-}" = logout && test "${2:-}" = 127.0.0.1:5555; then
+  test "${DOCKER_HOST:-}" = ssh://deploy@prosecho-deploy-cloudflare
+  exec ssh prosecho-deploy-cloudflare 'docker logout 127.0.0.1:5555'
+else
+  exec /usr/local/bin/docker "$@"
+fi

@@ -13,12 +13,14 @@ gem "tzinfo-data", platforms: %i[windows jruby]
 gem "bootsnap", require: false
 
 group :development, :test do
+  gem "minitest-mock", require: false
   gem "debug", platforms: %i[mri windows], require: "debug/prelude"
   gem "bundler-audit", require: false
   gem "standard", require: false
 end
 
 group :development do
+  gem "kamal", "2.12.0", require: false
   gem "lookbook", "2.3.15"
   gem "lookbook_theme", github: "menloparking/lookbook_theme", tag: "v0.1.1"
   gem "web-console"

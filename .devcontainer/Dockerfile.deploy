@@ -1,0 +1,17 @@
+FROM docker.io/library/docker:28.5.2-cli@sha256:cd58b396e427d1ee8cddcc3f3b7e8d8c2ba45755c5dd5b821b6e615e1ccf4586 AS docker
+FROM ghcr.io/rails/devcontainer/images/ruby:3.4.7
+USER root
+COPY --from=docker /usr/local/bin/docker /usr/local/bin/docker
+COPY --from=docker /usr/local/libexec/docker/cli-plugins/docker-buildx /usr/local/libexec/docker/cli-plugins/docker-buildx
+RUN usermod -g 100 vscode && apt-get update && \
+    apt-get install -y --no-install-recommends curl jq openssh-client postgresql-client && \
+    rm -rf /var/lib/apt/lists/* && \
+    curl -fsSL https://github.com/cloudflare/cloudflared/releases/download/2026.5.2/cloudflared-linux-amd64 -o /usr/local/bin/cloudflared && \
+    printf '%s  %s\n' 5286698547f03df745adb2355f04c12dde52ef425491e81f433642d695521886 /usr/local/bin/cloudflared | sha256sum -c - && \
+    chmod 755 /usr/local/bin/cloudflared && \
+    mkdir -p /home/vscode/.ssh && chown vscode:100 /home/vscode/.ssh && chmod 700 /home/vscode/.ssh
+COPY --chown=vscode:100 ssh.deploy /home/vscode/.ssh/config
+RUN chmod 600 /home/vscode/.ssh/config && docker --version && docker buildx version && cloudflared --version
+USER vscode
+ENV PATH="/prosecho/bin/prod:/home/vscode/.local/bin:/home/vscode/.local/share/mise/shims:${PATH}"
+WORKDIR /prosecho

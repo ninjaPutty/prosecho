@@ -2,8 +2,8 @@
 
 Local Rails 8.1 / Ruby 3.4 / PostgreSQL / Phlex 2 / Tailwind CSS 4 starter,
 formatted with Standard Ruby and tested with Minitest (not RSpec). The root
-page is public. No user model, sign-in route, church content integration, or
-deployed service configuration exists yet. Devise, Carnet, and Turnstile are
+page is public. No user model, sign-in route, or church content integration
+exists yet. Devise, Carnet, and Turnstile are
 dependencies only; password sign-in must wait for a selected
 and tested Devise Argon2id strategy.
 
@@ -17,7 +17,8 @@ manually, always pass `-p prosecho -f .devcontainer/compose.yaml -f
 `127.0.0.1:3100` (container port 3000). Only this repository is bind-mounted.
 No host home, credentials, runtime socket, or SSH agent is mounted. The
 container can access public networks; source code and dependencies are trusted
-only within that boundary. There is no production access or deployment profile.
+only within that boundary. Production access requires the separate explicit
+[deployment overlay](docs/deployment.md), never the ordinary Dev Container.
 Linux x86_64 rootless Podman is tested; Docker, OrbStack, macOS, and arm64 are
 not verified.
 
@@ -61,7 +62,7 @@ made.
 
 On Linux x86_64 rootless Podman, initialization, Compose build/start, frozen
 `bundle install`, and `db:prepare` succeeded with no credentials. `bin/check`
-passed (2 tests, 7 assertions); automatic post-create reported shell readiness
+passed at initial setup; automatic post-create reported shell readiness
 without preparing the database. Live HTTP requests returned 200 for `/`,
 `/lookbook`, `/lookbook/inspect/landing/default`, the preview iframe, its
 fingerprinted CSS, and Lookbook theme CSS. The iframe HTML contained one
@@ -93,6 +94,7 @@ Run `bin/check` inside the Dev Container.
 The image smoke test uses an isolated network and a throwaway runtime key.
 The local production image build, precompile, and smoke test passed, including
 the public page and its fingerprinted Tailwind CSS; `/lookbook` returned 404.
-First-deploy Kamal, registry, and production PostgreSQL configuration are not
-implemented. This image is not yet a production deployment target; Nix-host
-compatibility and other architectures still require validation.
+Kamal 2.12.0 configuration and guarded deployment tooling are documented in
+[Deployment](docs/deployment.md). Local verification is not a successful
+production deployment claim; VM, registry, Cloudflare, and other architectures
+require separate verification.

@@ -1,0 +1,296 @@
+#!/usr/bin/env ruby
+require "open3"
+require "fileutils"
+require "tmpdir"
+require "timeout"
+
+module ProsechoDeploy
+  HOST = "prosecho-deploy-cloudflare"
+  DOCKER_HOST = "ssh://deploy@#{HOST}"
+  class Failure < StandardError; end
+
+  # Captures and mutations share the same lock checks, deadline and cancellation.
+  class Runner
+    attr_accessor :lock
+
+    def check_lock!
+      raise Failure, "Target lock connection lost; no new phase allowed. Inspect already-issued remote commands." if lock && IO.select([lock], nil, nil, 0)
+    end
+
+    def run(*command, input: nil, capture: false, timeout: 300)
+      check_lock!
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+      result = +""
+      Open3.popen3(*command, pgroup: true) do |stdin, stdout, stderr, waiter|
+        check_lock!
+        stdin.write(input) if input
+        stdin.close
+        readers = [stdout, stderr]
+        until readers.empty? && waiter.join(0)
+          check_lock!
+          raise Failure, "Command timed out: #{command.first}; inspect remote state" if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+          ready = IO.select(readers + (lock ? [lock] : []), nil, nil, 0.05)&.first || []
+          check_lock!
+          (ready & readers).each do |stream|
+            chunk = stream.read_nonblock(4096, exception: false)
+            if chunk.nil?
+              readers.delete(stream)
+            elsif chunk != :wait_readable
+              if capture
+                result << chunk if stream == stdout
+                raise Failure, "Command output exceeded limit" if result.bytesize > 1_048_576
+              else
+                ((stream == stdout) ? $stdout : $stderr).write(chunk)
+              end
+            end
+          end
+        end
+        check_lock!
+        raise Failure, "Command failed: #{command.first} (details suppressed for credential safety)" unless waiter.value.success?
+      ensure
+        unless waiter.join(0)
+          begin
+            Process.kill("TERM", -waiter.pid)
+            Process.kill("KILL", -waiter.pid) unless waiter.join(2)
+          rescue Errno::ESRCH
+            # The command exited between the wait and signal.
+          end
+          waiter.join
+        end
+      end
+      result.strip
+    end
+  end
+
+  LOCK = <<~SH.freeze
+    set -eu
+    mkdir -p "$HOME/.local/share/prosecho"
+    exec 9>"$HOME/.local/share/prosecho/deploy.lock"
+    flock -n 9
+    root=$(docker info --format '{{.DockerRootDir}}')
+    test "$(df -Pk "$root" | awk 'NR==2 {print $4}')" -ge 4194304
+    test "$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)" -ge 2097152
+    printf 'LOCKED\n'
+    cat >/dev/null
+  SH
+  POSTGRES_WAIT = <<~SH.freeze
+    set -eu
+    for i in $(seq 1 60); do
+      if docker exec prosecho-postgres pg_isready -h 127.0.0.1 -U postgres -d postgres >/dev/null; then exit 0; fi
+      sleep 2
+    done
+    exit 1
+  SH
+  BOOTSTRAP = "docker exec -i prosecho-postgres sh -c 'export PGPASSWORD=\"$POSTGRES_PASSWORD\"; exec psql -X -q -w -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d postgres'"
+  DATABASE_WAIT = <<~SH.freeze
+    set -eu
+    IFS= read -r password
+    for i in $(seq 1 60); do
+      if printf '%s\n' "$password" | docker exec -i prosecho-postgres sh -c 'IFS= read -r PGPASSWORD; export PGPASSWORD; exec psql -X -w -h 127.0.0.1 -U prosecho -d prosecho_production -Atqc "SELECT 1"' | grep -qx 1; then exit 0; fi
+      sleep 2
+    done
+    exit 1
+  SH
+
+  def self.clean_sha!(sha, runner = Runner.new)
+    raise Failure, "Use a full lowercase 40-character committed SHA" unless sha&.match?(/\A[0-9a-f]{40}\z/)
+    raise Failure, "Candidate SHA must be HEAD" unless runner.run("git", "rev-parse", "HEAD", capture: true) == sha
+    raise Failure, "Candidate source must be clean" unless runner.run("git", "status", "--porcelain", capture: true).empty?
+  end
+
+  def self.with_candidate(source, sha)
+    raise Failure, "Use a full lowercase 40-character committed SHA" unless sha&.match?(/\A[0-9a-f]{40}\z/)
+    runner = Runner.new
+    expected = runner.run("git", "-C", source, "rev-parse", "#{sha}^{commit}", capture: true)
+    raise Failure, "Candidate commit mismatch" unless expected == sha
+    Dir.mktmpdir("prosecho-release-") do |operation|
+      candidate = File.join(operation, "candidate")
+      runner.run("git", "clone", "--no-local", "--no-checkout", source, candidate, capture: true)
+      runner.run("git", "-C", candidate, "checkout", "--detach", sha, capture: true)
+      old_env = ENV.to_h.slice("PATH", "TMPDIR", "BUNDLE_GEMFILE")
+      begin
+        ENV["PATH"] = ([File.join(candidate, "bin/prod")] + ENV.fetch("PATH").split(":").reject { |path| path.start_with?(source + "/") }).join(":")
+        ENV["TMPDIR"] = operation
+        ENV["BUNDLE_GEMFILE"] = File.join(candidate, "Gemfile")
+        Dir.chdir(candidate) do
+          clean_sha!(sha, runner)
+          runner.run("git", "ls-files", "-z", capture: true).split("\0").each do |file|
+            next if File.symlink?(file)
+            File.chmod(File.executable?(file) ? 0o555 : 0o444, file)
+          end
+          yield runner
+          clean_sha!(sha, runner)
+        end
+      ensure
+        %w[PATH TMPDIR BUNDLE_GEMFILE].each { |key| old_env.key?(key) ? ENV[key] = old_env[key] : ENV.delete(key) }
+      end
+    end
+  end
+
+  def self.bootstrap_sql(password, role: "prosecho", database: "prosecho_production")
+    raise Failure, "Unsafe database identifier" unless [role, database].all? { |name| name.match?(/\A[a-z][a-z0-9_]{0,62}\z/) }
+    raise Failure, "Application password must be 32 to 128 hexadecimal characters" unless password.match?(/\A[0-9a-f]{32,128}\z/)
+    <<~SQL
+      SET log_statement = 'none';
+      SET log_min_duration_statement = -1;
+      SET log_min_duration_sample = -1;
+      SET log_transaction_sample_rate = 0;
+      SET log_min_error_statement = 'panic';
+      SELECT 'CREATE ROLE #{role} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS NOINHERIT'
+      WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '#{role}') \\gexec
+      DO $$ BEGIN
+        IF EXISTS (SELECT FROM pg_auth_members WHERE member = (SELECT oid FROM pg_roles WHERE rolname = '#{role}')) THEN
+          RAISE EXCEPTION 'Application role has unexpected memberships; operator review required';
+        END IF;
+      END $$;
+      ALTER ROLE #{role} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS NOINHERIT PASSWORD '#{password}';
+      SELECT 'CREATE DATABASE #{database} OWNER #{role}'
+      WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '#{database}') \\gexec
+      ALTER DATABASE #{database} OWNER TO #{role};
+    SQL
+  end
+
+  def self.read_secrets(file)
+    raise Failure, "app.env must be mode 600" unless File.stat(file).mode & 0o777 == 0o600
+    lines = File.readlines(file, chomp: true)
+    keys = %w[KAMAL_REGISTRY_PASSWORD SECRET_KEY_BASE PGPASSWORD PGADMINPASSWORD]
+    raise Failure, "app.env requires exactly four unique unquoted KEY=value lines" unless lines.size == 4 && lines.map { |line| line.split("=", 2).first }.sort == keys.sort && lines.all? { |line| line.match?(/\A[A-Z_]+=[A-Za-z0-9._-]+\z/) }
+    secrets = lines.to_h { |line| line.split("=", 2) }
+    %w[PGPASSWORD PGADMINPASSWORD SECRET_KEY_BASE].each do |key|
+      raise Failure, "#{key} must be 32 to 128 hexadecimal characters" unless secrets.fetch(key).match?(/\A[0-9a-f]{32,128}\z/)
+    end
+    raise Failure, "Database admin and app passwords must differ" if secrets["PGPASSWORD"] == secrets["PGADMINPASSWORD"]
+    secrets
+  end
+
+  def self.phase_input(kind, secrets)
+    case kind
+    when "bootstrap" then bootstrap_sql(secrets.fetch("PGPASSWORD"))
+    when "app-query" then secrets.fetch("PGPASSWORD") + "\n"
+    when "database" then %w[SECRET_KEY_BASE PGPASSWORD].map { |key| "#{key}=#{secrets.fetch(key)}\n" }.join
+    end
+  end
+
+  def self.artifact_script(sha, record: false)
+    <<~SH
+      set -eu
+      file="$HOME/.local/share/prosecho/images/#{sha}"
+      url="http://127.0.0.1:5555/v2/prosecho/manifests/#{sha}"
+      accept='Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.docker.distribution.manifest.list.v2+json'
+      code=$(curl --max-time 10 -sS -o /dev/null -w '%{http_code}' -H "$accept" "$url")
+      if test "$code" = 404; then test ! -f "$file"; printf new; exit 0; fi
+      test "$code" = 200
+      digest=$(curl --max-time 10 -fsSI -H "$accept" "$url" | awk 'tolower($1)=="docker-content-digest:" {gsub("\\r", "", $2); print $2}')
+      printf '%s' "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$'
+      #{record ? 'mkdir -p "$(dirname "$file")"; (set -C; printf "%s\n" "$digest" >"$file")' : 'test -f "$file"; test "$(cat "$file")" = "$digest"'}
+      printf '%s' "$digest"
+    SH
+  end
+
+  def self.phases(mode, sha)
+    kamal = ["bundle", "exec", "kamal"]
+    commands = []
+    if mode == "rollback"
+      commands << ["ssh", HOST, "docker inspect prosecho-web-#{sha} >/dev/null"]
+      commands << [*kamal, "rollback", sha]
+    else
+      commands << [*kamal, "build", "push", "--version", sha]
+      if mode == "first"
+        commands << ["ssh", HOST, "docker network inspect kamal >/dev/null 2>&1 || docker network create kamal"]
+        commands << [*kamal, "accessory", "boot", "postgres", "--version", sha]
+        commands << ["ssh", HOST, POSTGRES_WAIT]
+        commands << ["bootstrap", "ssh", HOST, BOOTSTRAP]
+      end
+      commands << ["app-query", "ssh", HOST, DATABASE_WAIT]
+      commands << [*kamal, "build", "pull", "--version", sha]
+      task = (mode == "first") ? "db:prepare" : "db:migrate"
+      database = "docker run --rm -i --network kamal --env-file /dev/stdin -e PGHOST=prosecho-postgres -e PGUSER=prosecho -e PGDATABASE=prosecho_production 127.0.0.1:5555/prosecho:#{sha} bin/rails #{task}"
+      database = "test -f ~/.local/share/prosecho/db-prepared || { #{database} && touch ~/.local/share/prosecho/db-prepared; }" if mode == "first"
+      commands << ["database", "ssh", HOST, database]
+      commands << [*kamal, "proxy", "boot", "--version", sha] if mode == "first"
+      commands << [*kamal, "redeploy", "--skip-push", "--version", sha]
+    end
+    commands << ["ssh", HOST, "curl --max-time 10 --fail --silent --show-error -H 'Host: prosecho.menloparking.com' http://127.0.0.1:8080/ready"]
+    commands << ["ssh", HOST, "touch ~/.local/share/prosecho/initialized"] if mode == "first"
+    commands
+  end
+
+  def self.deploy(mode, sha, runner, secrets)
+    lock = IO.popen(["ssh", HOST, LOCK], "r+", pgroup: true)
+    begin
+      begin
+        raise Failure, "Target lock/capacity check failed" unless Timeout.timeout(30) { lock.gets } == "LOCKED\n"
+      rescue Timeout::Error
+        raise Failure, "Target lock/capacity check timed out"
+      end
+      runner.lock = lock
+      initialized = runner.run("ssh", HOST, "if test -f ~/.local/share/prosecho/initialized; then printf initialized; else printf new; fi", capture: true, timeout: 30) == "initialized"
+      raise Failure, "First install only; initialized marker exists" if mode == "first" && initialized
+      raise Failure, "First install must finish before migrations/rollback" if mode != "first" && !initialized
+      artifact = runner.run("ssh", HOST, artifact_script(sha), capture: true, timeout: 30)
+      raise Failure, "Rollback artifact is missing" if mode == "rollback" && artifact == "new"
+      phases(mode, sha).each do |command|
+        clean_sha!(sha, runner)
+        push = command[0, 5] == %w[bundle exec kamal build push]
+        next if push && artifact != "new"
+        if artifact != "new"
+          raise Failure, "Immutable SHA artifact changed" unless runner.run("ssh", HOST, artifact_script(sha), capture: true, timeout: 30) == artifact
+        end
+        kind = %w[bootstrap app-query database].include?(command.first) ? command.shift : nil
+        runner.run(*command, input: phase_input(kind, secrets), capture: !kind.nil?, timeout: push ? 1800 : 300)
+        artifact = runner.run("ssh", HOST, artifact_script(sha, record: true), capture: true, timeout: 30) if push
+        raise Failure, "Build did not publish the SHA artifact" if artifact == "new"
+      end
+    ensure
+      runner.lock = nil
+      unless lock.closed?
+        # Only the lock transport is terminated; remote phase cancellation is not guaranteed.
+        pid = lock.pid
+        begin
+          Process.kill("TERM", -pid)
+          Timeout.timeout(2) { lock.close }
+        rescue Timeout::Error
+          Process.kill("KILL", -pid)
+          lock.close unless lock.closed?
+        rescue Errno::ESRCH
+          lock.close
+        end
+      end
+    end
+  end
+
+  def self.main(args)
+    mode, sha = args
+    raise Failure, "Usage: bin/prod/deploy check|first|migrate|rollback FULL_SHA" unless args.length == 2 && %w[check first migrate rollback].include?(mode)
+    container = File.exist?("/.dockerenv") || File.exist?("/run/.containerenv")
+    raise Failure, "Run inside the Prosecho devcontainer at /prosecho" unless Dir.pwd == "/prosecho" && container
+    trap("TERM") { raise Interrupt }
+    with_candidate(Dir.pwd, sha) do |runner|
+      runner.run("bin/check", timeout: 600)
+      clean_sha!(sha, runner)
+      puts "Checked isolated candidate #{sha}"
+      next if mode == "check"
+      if mode == "rollback"
+        raise Failure, "Review schema compatibility and set ROLLBACK_COMPATIBLE_SHA" unless ENV["ROLLBACK_COMPATIBLE_SHA"] == sha
+      elsif mode == "migrate"
+        raise Failure, "Review migrations/backups and set APPROVED_MIGRATION_SHA" unless ENV["APPROVED_MIGRATION_SHA"] == sha
+      end
+      raise Failure, "Remote Docker host required" unless ENV["DOCKER_HOST"] == DOCKER_HOST
+      [[%w[bundle exec kamal version], "2.12.0"], [%w[docker --version], "28.5.2,"], [%w[docker buildx version], "v0.29.1 "], [%w[cloudflared --version], "2026.5.2 "]].each do |command, version|
+        raise Failure, "Deployment tool version mismatch" unless runner.run(*command, capture: true, timeout: 30).include?(version)
+      end
+      identities = runner.run("ssh-add", "-L", capture: true, timeout: 30).lines.map { |line| line.split.first(2) }
+      raise Failure, "Dedicated agent must contain only the pinned deployment key" unless identities == [File.read("/run/prosecho/deploy.pub").split.first(2)]
+      raise Failure, "Service token must be mode 600" unless File.stat("/run/prosecho/service-token.json").mode & 0o777 == 0o600
+      deploy(mode, sha, runner, read_secrets("/run/prosecho/app.env"))
+    end
+  end
+end
+
+if $PROGRAM_NAME == __FILE__
+  begin
+    ProsechoDeploy.main(ARGV)
+  rescue ProsechoDeploy::Failure => error
+    abort error.message
+  end
+end

@@ -4,4 +4,5 @@ set -eu
 export BUNDLE_FROZEN=true
 bundle check
 bundle exec standardrb
+bundle exec standardrb bin/prod/deploy
 RAILS_ENV=test bin/rails test

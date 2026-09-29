@@ -20,6 +20,7 @@ podman run --rm --network none --entrypoint /bin/sh "$image" -ec '
   test ! -e /usr/bin/git
   test ! -d /usr/local/bundle/ruby/3.4.0/gems/lookbook-2.3.15
   test ! -d /usr/local/bundle/ruby/3.4.0/gems/standard-1.56.0
+  test ! -d /usr/local/bundle/ruby/3.4.0/gems/kamal-2.12.0
 '
 
 podman run --rm --network none --entrypoint /bin/sh \
@@ -34,6 +35,8 @@ podman run --rm --network none --entrypoint /bin/sh \
         health = Net::HTTP.get_response(URI("http://127.0.0.1:3000/up"))
         if health.code == "200"
           inspector = Net::HTTP.get_response(URI("http://127.0.0.1:3000/lookbook"))
+          readiness = Net::HTTP.get_response(URI("http://127.0.0.1:3000/ready"))
+          abort "Readiness without DB must return generic 503" unless readiness.code == "503" && readiness.body == "not ready\n"
           abort "Lookbook returned #{inspector.code}" unless inspector.code == "404"
           home = Net::HTTP.get_response(URI("http://127.0.0.1:3000/"))
           abort "Home returned #{home.code}" unless home.code == "200"

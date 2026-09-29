@@ -1,0 +1,9 @@
+#!/bin/sh
+set -eu
+: "${CF_SSH_HOST:?Set CF_SSH_HOST in the external runtime.env}"
+file=/run/prosecho/service-token.json
+test "$(stat -c %a "$file")" = 600
+TUNNEL_SERVICE_TOKEN_ID=$(jq -er '.client_id | select(type == "string" and length > 0)' "$file")
+TUNNEL_SERVICE_TOKEN_SECRET=$(jq -er '.client_secret | select(type == "string" and length > 0)' "$file")
+export TUNNEL_SERVICE_TOKEN_ID TUNNEL_SERVICE_TOKEN_SECRET
+exec cloudflared access ssh --hostname "$CF_SSH_HOST"

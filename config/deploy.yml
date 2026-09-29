@@ -1,0 +1,49 @@
+service: prosecho
+image: prosecho
+servers:
+  web:
+    - prosecho-deploy-cloudflare
+registry:
+  server: 127.0.0.1:5555
+  username: prosecho
+  password:
+    - KAMAL_REGISTRY_PASSWORD
+builder:
+  arch: amd64
+  driver: docker
+ssh:
+  user: deploy
+  config: true
+  forward_agent: false
+proxy:
+  host: prosecho.menloparking.com
+  ssl: false
+  app_port: 3000
+  healthcheck:
+    path: /ready
+  run:
+    bind_ips:
+      - 127.0.0.1
+    http_port: 8080
+    https_port: 8443
+env:
+  clear:
+    PGHOST: prosecho-postgres
+    PGUSER: prosecho
+    PGDATABASE: prosecho_production
+  secret:
+    - SECRET_KEY_BASE
+    - PGPASSWORD
+accessories:
+  postgres:
+    image: postgres:17
+    host: prosecho-deploy-cloudflare
+    env:
+      clear:
+        POSTGRES_USER: postgres
+        POSTGRES_DB: postgres
+      secret:
+        - POSTGRES_PASSWORD
+    directories:
+      - /home/deploy/.local/share/prosecho/postgres:/var/lib/postgresql/data
+retain_containers: 3
