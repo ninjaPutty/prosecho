@@ -131,6 +131,10 @@ class DeploymentTest < ActiveSupport::TestCase
     assert_equal 8080, config.proxy.run.http_port
     assert_equal 8443, config.proxy.run.https_port
     assert_equal ["127.0.0.1"], config.proxy.run.bind_ips
+    assert_equal "json-file", config.logging.driver
+    assert_equal({"max-size" => "10m"}, config.logging.options)
+    assert_equal ["--log-driver", '"json-file"'], config.proxy.run.options_args
+    assert_equal "10m", config.proxy.run.log_max_size
     assert_equal ["--network", "kamal"], config.accessories.first.network_args
     assert_nil config.accessories.first.port
     assert_equal [ProsechoDeploy::HOST], config.accessories.first.hosts

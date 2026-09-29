@@ -65,6 +65,11 @@ header. PostgreSQL 17 has no published port, uses the internal `kamal` network,
 and persists at the explicit VM path `/home/deploy/.local/share/prosecho/postgres`.
 Do not erase or repurpose that directory or initialization/digest markers.
 
+App/accessory and proxy containers explicitly use Docker's `json-file` logging
+driver with a 10 MiB log limit. Kamal's default `max-size` log option is not
+compatible with the VM daemon's `journald` default; do not change the daemon-wide
+logging configuration to work around an app deployment failure.
+
 ## Lifecycle Contract
 
 The coordinating agent must obtain commit authorization and commit the reviewed
