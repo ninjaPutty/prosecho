@@ -1,4 +1,15 @@
 Rails.application.routes.draw do
+  devise_for :users, only: :sessions, controllers: {sessions: "users/sessions"}
+  get "dashboard", to: "dashboard#show"
+  namespace :admin do
+    root "dashboard#show"
+    post "setup", to: "setup#create"
+    resources :accounts, only: %i[new create edit update]
+    resources :campuses, only: %i[edit update] do
+      post :import, on: :collection
+    end
+    resource :data_policy, only: %i[show update]
+  end
   mount Lookbook::Engine, at: "/lookbook" if Rails.env.development?
   root "home#index"
   # Define your application routes per the DSL in https://guides.rubyonrails.org/routing.html

@@ -3,6 +3,7 @@
 !Gemfile.lock
 !bin/
 !bin/rails
+!bin/jobs
 !config.ru
 !config/
 !config/**

@@ -1,0 +1,17 @@
+# Suggested source descriptions for the admin form. Saved DataPolicy records
+# are authoritative; this YAML does not confirm data decisions or set retention.
+data:
+  address_source: Person.PrimaryFamilyId -> GroupLocations (Home type) -> Location
+  approved_at:
+  approved_by:
+  attribute_keys: []
+  family_status_meaning: Observed engagement category, not marriage or household composition
+  household_source: >-
+    PrimaryFamilyId -> active non-archived GroupMembers with Adult or Child GroupRole
+  retention_days:
+maps:
+  approved_at:
+  approved_by:
+  geocoder_host:
+  strategy: self_hosted_osm_and_nominatim
+  tile_host:

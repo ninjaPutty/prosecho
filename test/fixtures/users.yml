@@ -1,0 +1,14 @@
+staff:
+  id: 5d6878c0-deb1-4342-af8f-0278a0155511
+  active: true
+  email: staff@example.test
+  encrypted_password: <%= Argon2::Password.new(profile: :rfc_9106_low_memory).create("fixture long passphrase") %>
+  role: staff
+  view_photos: true
+
+administrator:
+  id: 131b4336-886b-4d10-b8d7-5842bac24dce
+  active: true
+  email: admin@example.test
+  encrypted_password: <%= Argon2::Password.new(profile: :rfc_9106_low_memory).create("fixture long passphrase") %>
+  role: administrator

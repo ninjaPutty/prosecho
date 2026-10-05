@@ -6,6 +6,7 @@ default: &default
   username: <%= ENV.fetch("PGUSER", "postgres") %>
   password: <%= ENV["PGPASSWORD"] %>
   max_connections: <%= ENV.fetch("RAILS_MAX_THREADS", 5) %>
+  schema_dump: ../config/schema.rb
 
 development:
   <<: *default

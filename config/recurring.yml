@@ -1,0 +1,9 @@
+development:
+  foundation_readiness:
+    class: FoundationReadinessJob
+    schedule: every 4 hours
+production:
+  foundation_readiness:
+    class: FoundationReadinessJob
+    schedule: every 4 hours
+test: {}

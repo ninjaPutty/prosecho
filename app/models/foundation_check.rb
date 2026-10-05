@@ -1,0 +1,2 @@
+class FoundationCheck < ApplicationRecord
+end

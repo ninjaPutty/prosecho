@@ -1,6 +1,11 @@
 service: prosecho
 image: prosecho
 servers:
+  job:
+    hosts:
+      - prosecho-deploy-cloudflare
+    cmd: ruby bin/jobs
+    proxy: false
   web:
     - prosecho-deploy-cloudflare
 registry:

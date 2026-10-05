@@ -1,0 +1,9 @@
+north:
+  id: a63191d6-f854-419c-906c-33c86598d452
+  name: Example North
+  rock_id: 100001
+
+south:
+  id: 6575dc8f-cc5e-41f7-8c40-f610fbc41a33
+  name: Example South
+  rock_id: 100002
