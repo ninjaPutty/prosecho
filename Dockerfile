@@ -9,7 +9,8 @@ ENV RAILS_ENV=production \
     BUNDLE_WITHOUT=development:test
 
 FROM base AS build
-RUN apt-get update && apt-get install -y --no-install-recommends build-essential git libpq-dev && \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential git libffi-dev libpq-dev && \
     rm -rf /var/lib/apt/lists/*
 
 COPY Gemfile Gemfile.lock ./
@@ -20,7 +21,7 @@ COPY . .
 RUN SECRET_KEY_BASE_DUMMY=1 bin/rails assets:precompile
 
 FROM base
-RUN apt-get update && apt-get install -y --no-install-recommends libpq5 && \
+RUN apt-get update && apt-get install -y --no-install-recommends libffi8 libpq5 && \
     rm -rf /var/lib/apt/lists/* && \
     groupadd --system --gid 1000 rails && \
     useradd --uid 1000 --gid rails --home-dir /rails rails && \
