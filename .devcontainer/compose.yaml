@@ -13,8 +13,7 @@ services:
     ports:
       - "127.0.0.1:3100:3000"
   postgres:
-    profiles: [db]
-    image: postgres:17
+    image: docker.io/library/postgres:17
     environment:
       POSTGRES_PASSWORD: postgres
     volumes:

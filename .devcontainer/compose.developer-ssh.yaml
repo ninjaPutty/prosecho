@@ -1,0 +1,12 @@
+services:
+  app:
+    environment:
+      GIT_SSH_COMMAND: sh /prosecho/.devcontainer/git-ssh.sh
+      SSH_AUTH_SOCK: /run/prosecho-dev-agent.sock
+    volumes:
+      - type: bind
+        source: ${PROSECHO_DEV_SSH_AGENT_SOCK:?Set PROSECHO_DEV_SSH_AGENT_SOCK explicitly}
+        target: /run/prosecho-dev-agent.sock
+        read_only: true
+        bind:
+          create_host_path: false

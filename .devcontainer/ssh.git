@@ -1,0 +1,17 @@
+Host github.com
+  HostName github.com
+  User git
+  ProxyCommand none
+  HostKeyAlgorithms ssh-ed25519
+
+Host *
+  BatchMode yes
+  ConnectTimeout 10
+  ForwardAgent no
+  GlobalKnownHostsFile /dev/null
+  IdentityFile none
+  PasswordAuthentication no
+  ProxyCommand false
+  StrictHostKeyChecking yes
+  UpdateHostKeys no
+  UserKnownHostsFile /prosecho/.devcontainer/git_github_known_hosts

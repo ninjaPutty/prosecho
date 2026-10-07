@@ -2,6 +2,7 @@
   "name": "prosecho",
   "dockerComposeFile": ["compose.yaml", "compose.runtime.yaml"],
   "service": "app",
+  "runServices": ["app", "postgres"],
   "workspaceFolder": "/prosecho",
   "remoteUser": "vscode",
   "updateRemoteUserUID": true,
@@ -11,7 +12,10 @@
     "forwardPorts": [3000],
   "customizations": {
     "vscode": {
-      "settings": {"terminal.integrated.cwd": "/prosecho"},
+      "settings": {
+        "dev.containers.forwardSSHAgent": true,
+        "terminal.integrated.cwd": "/prosecho"
+      },
       "extensions": ["shopify.ruby-lsp", "standard.vscode-standard"]
     }
   }

@@ -1,5 +1,6 @@
 /.bundle/
 /.devcontainer/compose.runtime.yaml
+/.devcontainer/prosecho.code-workspace
 /.env
 /config/master.key
 /config/credentials.yml.enc
@@ -8,6 +9,7 @@
 /tmp/*
 !/tmp/.keep
 /vendor/bundle/
+/work logs
 /app/assets/builds/*
 !/app/assets/builds/.keep
 /public/assets/
