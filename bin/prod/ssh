@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+# Deployment tooling puts bin/prod on PATH; ordinary SSH calls must pass through.
+if test "$#" -gt 0; then
+  exec /usr/bin/ssh "$@"
+fi
+exec ruby "$(dirname "$0")/../../lib/production_command.rb" ssh

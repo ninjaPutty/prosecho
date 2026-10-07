@@ -66,20 +66,24 @@ class DeploymentTest < ActiveSupport::TestCase
     assert system("sh", "-n", ".kamal/secrets")
   end
 
-  test "Cloudflare helper passes fake credentials through environment not arguments" do
+  test "Cloudflare helper clears Access credentials without reading token files" do
     Dir.mktmpdir do |directory|
       scripts = {
-        "stat" => "printf 600",
-        "jq" => "case \"$*\" in *client_id*) printf fake-id;; *) printf fake-secret;; esac",
-        "cloudflared" => 'test "$TUNNEL_SERVICE_TOKEN_ID" = fake-id && test "$TUNNEL_SERVICE_TOKEN_SECRET" = fake-secret && printf "%s\\n" "$*"'
+        "stat" => "exit 99",
+        "jq" => "exit 99",
+        "cloudflared" => 'test -z "${TUNNEL_SERVICE_TOKEN_ID+set}" && test -z "${TUNNEL_SERVICE_TOKEN_SECRET+set}" && printf "%s\\n" "$*"'
       }
       scripts.each do |name, script|
         path = File.join(directory, name)
         File.write(path, "#!/bin/sh\n#{script}\n")
         File.chmod(0o700, path)
       end
-      output, status = Open3.capture2({"PATH" => "#{directory}:/usr/bin:/bin", "CF_SSH_HOST" => "fake.example"}, "sh", "bin/prod/cloudflare-ssh")
+      env = {"PATH" => "#{directory}:/usr/bin:/bin", "CF_SSH_HOST" => "fake.example",
+             "PROSECHO_CF_AUTH" => nil, "TUNNEL_SERVICE_TOKEN_ID" => "fake-id",
+             "TUNNEL_SERVICE_TOKEN_SECRET" => "fake-secret"}
+      output, error, status = Open3.capture3(env, "sh", "bin/prod/cloudflare-ssh")
       assert status.success?
+      assert_empty error
       assert_equal "access ssh --hostname fake.example\n", output
       assert_not_includes output, "fake-secret"
     end
@@ -171,12 +175,24 @@ class DeploymentTest < ActiveSupport::TestCase
   end
 
   test "target lock remains held until the orchestrator closes stdin" do
-    Dir.mktmpdir do |directory|
+    Dir.mktmpdir(nil, Dir.home) do |directory|
+      FileUtils.mkdir_p(File.join(directory, ".local/share/prosecho"), mode: 0o700)
       {"docker" => "printf /tmp", "df" => "printf unused", "awk" => "printf 8388608"}.each do |name, script|
         path = File.join(directory, name)
         File.write(path, "#!/bin/sh\n#{script}\n")
         File.chmod(0o700, path)
       end
+      helper = File.join(directory, "prosecho-cleanup")
+      File.write(helper, <<~PYTHON)
+        #!/usr/bin/env python3
+        import runpy
+        module = runpy.run_path(#{File.expand_path("bin/prod/cleanup").inspect})
+        module["Cleanup"].__init__.__globals__["STATE"] = module["Path"].home() / ".local/share/prosecho"
+        module["Cleanup"].capacity = lambda self: 8 * 1024**3
+        module["Path"].read_text = lambda self: "MemAvailable: 8388608 kB\\n"
+        module["main"]()
+      PYTHON
+      File.chmod(0o700, helper)
       env = {"HOME" => directory, "PATH" => "#{directory}:/usr/bin:/bin"}
       file = File.join(directory, ".local/share/prosecho/deploy.lock")
       Open3.popen3(env, "sh", "-c", ProsechoDeploy::LOCK) do |input, output, _error, waiter|
@@ -193,6 +209,20 @@ class DeploymentTest < ActiveSupport::TestCase
       _text, status = Open3.capture2("flock", "-n", file, "true")
       assert status.success?
     end
+  end
+
+  test "deployment uses the cleanup lock owner without a lock bypass" do
+    assert_includes ProsechoDeploy::LOCK, "exec prosecho-cleanup --apply --hold-lock"
+    assert_not_includes ProsechoDeploy::LOCK, "exec 9>"
+    assert_not_includes ProsechoDeploy::LOCK, "--lock-held"
+    source = File.read("bin/prod/deploy")
+    assert_includes source, 'if kind == "database" || activation'
+    assert_includes source, "JSON.generate(sha: sha, digest: artifact)"
+  end
+
+  test "cleanup policies pass hermetic guest CLI regressions" do
+    output, error, status = Open3.capture3("ruby", "tests/prodcleanup/cleanup_test.rb")
+    assert status.success?, output + error
   end
 
   test "a switched shared checkout cannot change the isolated checked build source" do

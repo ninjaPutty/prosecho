@@ -1,9 +1,9 @@
 #!/bin/sh
 set -eu
-: "${CF_SSH_HOST:?Set CF_SSH_HOST in the external runtime.env}"
-file=/run/prosecho/service-token.json
-test "$(stat -c %a "$file")" = 600
-TUNNEL_SERVICE_TOKEN_ID=$(jq -er '.client_id | select(type == "string" and length > 0)' "$file")
-TUNNEL_SERVICE_TOKEN_SECRET=$(jq -er '.client_secret | select(type == "string" and length > 0)' "$file")
-export TUNNEL_SERVICE_TOKEN_ID TUNNEL_SERVICE_TOKEN_SECRET
+CF_SSH_HOST=${CF_SSH_HOST:-ssh-prosecho.menloparking.com}
+unset TUNNEL_SERVICE_TOKEN_ID TUNNEL_SERVICE_TOKEN_SECRET
+if ! command -v cloudflared >/dev/null 2>&1; then
+  printf '%s\n' 'cloudflared is missing; rebuild the Prosecho devcontainer image.' >&2
+  exit 1
+fi
 exec cloudflared access ssh --hostname "$CF_SSH_HOST"

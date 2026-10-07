@@ -1,0 +1,446 @@
+#!/usr/bin/env python3
+"""Guest-only, lock-coordinated cleanup. No registry, volume or data deletion."""
+import argparse
+import ctypes
+import datetime
+import fcntl
+import json
+import math
+import os
+from pathlib import Path
+import re
+import secrets
+import signal
+import stat
+import subprocess
+import sys
+import time
+import urllib.request
+
+REPOSITORY = "127.0.0.1:5555/prosecho"
+SHA = re.compile(r"[0-9a-f]{40}")
+DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
+NAME = re.compile(r"/prosecho-web-([0-9a-f]{40})(?:(?:-replaced-|_replaced_)[A-Za-z0-9_.-]+)?")
+INITIAL_PROTECTED = {
+    "4a69a6aeca31d6f75f8496bb38f0a90abbb5a74b",
+    "66870ed7351e11ecf1f720743c54fd3bd25bed96",
+    "c9989afa5b16ee745feb920efde7137e598e27cb",
+}
+GRACE = 7 * 24 * 3600
+STATE = Path("/home/deploy/.local/share/prosecho")
+DOCKER_TIMEOUT = 180
+
+
+def timestamp(value):
+    if not isinstance(value, str):
+        raise ValueError("Missing timestamp")
+    parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ValueError("Timestamp lacks timezone")
+    return parsed.timestamp()
+
+
+def report(event, **values):
+    print(json.dumps({"event": event, **values}, sort_keys=True), file=sys.stderr, flush=True)
+
+
+class Cleanup:
+    def __init__(self, apply=False):
+        self.apply = apply
+        if os.geteuid() == 0:
+            raise ValueError("Run cleanup as deploy, not root")
+        self.dir_fd = self.state_directory(create=True)
+        self.path = STATE / "deploy.lock"
+        self.fd = os.open("deploy.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW,
+                          0o600, dir_fd=self.dir_fd)
+        self.validate_lock(check_uncertain=False)
+        fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        self.validate_lock()
+
+    def state_directory(self, create=False):
+        fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            for path in [Path("/"), *reversed(STATE.parents[:-1]), STATE]:
+                if path != Path("/"):
+                    try:
+                        named = os.stat(path.name, dir_fd=fd, follow_symlinks=False)
+                    except FileNotFoundError:
+                        if not create:
+                            raise
+                        os.mkdir(path.name, mode=0o700, dir_fd=fd)
+                        named = os.stat(path.name, dir_fd=fd, follow_symlinks=False)
+                    child = os.open(path.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                    dir_fd=fd)
+                    os.close(fd)
+                    fd = child
+                    opened = os.fstat(fd)
+                    if (named.st_dev, named.st_ino) != (opened.st_dev, opened.st_ino):
+                        raise ValueError("Replaced state directory")
+                info = os.fstat(fd)
+                if (not stat.S_ISDIR(info.st_mode) or info.st_uid not in (0, os.geteuid())
+                        or info.st_mode & 0o022
+                        or path in (STATE, STATE.parents[2]) and info.st_uid != os.geteuid()
+                        or path == STATE and stat.S_IMODE(info.st_mode) != 0o700):
+                    raise ValueError("Unsafe state directory or parent")
+            return fd
+        except BaseException:
+            os.close(fd)
+            raise
+
+    def validate_lock(self, check_uncertain=True):
+        current = self.state_directory()
+        try:
+            pinned, named_dir = os.fstat(self.dir_fd), os.fstat(current)
+            if (pinned.st_dev, pinned.st_ino) != (named_dir.st_dev, named_dir.st_ino):
+                raise ValueError("Replaced deployment state path")
+        finally:
+            os.close(current)
+        held = os.fstat(self.fd)
+        named = os.stat("deploy.lock", dir_fd=self.dir_fd, follow_symlinks=False)
+        if (not stat.S_ISREG(held.st_mode) or held.st_uid != os.geteuid()
+                or held.st_nlink != 1 or held.st_mode & 0o022
+                or (held.st_dev, held.st_ino) != (named.st_dev, named.st_ino)):
+            raise ValueError("Unsafe or replaced deploy.lock; never unlink the lock")
+        if check_uncertain:
+            for name in ("cleanup-inflight", "cleanup-uncertain"):
+                try:
+                    os.stat(name, dir_fd=self.dir_fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    continue
+                raise ValueError(f"{name} present; operator daemon verification required")
+
+    def docker(self, *args):
+        self.validate_lock()
+        env = os.environ.copy()
+        env.pop("DOCKER_HOST", None)
+        env.pop("DOCKER_CONTEXT", None)
+        command = ["docker", "--host", "unix:///var/run/docker.sock", *args]
+        mutation = args[:2] in (("buildx", "prune"), ("container", "rm"), ("image", "rm"))
+        if not mutation:
+            return subprocess.run(command, env=env, check=True, capture_output=True,
+                                  text=True, timeout=DOCKER_TIMEOUT).stdout.strip()
+        # Adopt plugin grandchildren so killed descendants can be reaped, not left as zombies.
+        if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0:
+            raise OSError(ctypes.get_errno(), "Cannot supervise Docker descendants")
+        marker = os.open("cleanup-inflight", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                         0o600, dir_fd=self.dir_fd)
+        with os.fdopen(marker, "w") as stream:
+            json.dump({"at": time.time(), "command": list(args), "reason": "in-flight mutation"},
+                      stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.fsync(self.dir_fd)
+        process = None
+        handlers = {}
+
+        def interrupted(signum, frame):
+            raise InterruptedError("Docker mutation interrupted")
+
+        try:
+            for sig in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+                handlers[sig] = signal.signal(sig, interrupted)
+            process = subprocess.Popen(command, env=env, stdout=subprocess.PIPE,
+                                       stderr=subprocess.PIPE, text=True, start_new_session=True)
+            output, _error = process.communicate(timeout=DOCKER_TIMEOUT)
+            if process.returncode != 0:
+                raise subprocess.CalledProcessError(process.returncode, command)
+            try:
+                os.killpg(process.pid, 0)
+            except ProcessLookupError:
+                pass
+            else:
+                raise ValueError("Docker exited with surviving plugin descendants")
+            self.validate_lock(check_uncertain=False)
+            os.unlink("cleanup-inflight", dir_fd=self.dir_fd)
+            os.fsync(self.dir_fd)
+            return output.strip()
+        except BaseException:
+            try:
+                os.replace("cleanup-inflight", "cleanup-uncertain",
+                           src_dir_fd=self.dir_fd, dst_dir_fd=self.dir_fd)
+                os.fsync(self.dir_fd)
+            except OSError:
+                pass  # A surviving inflight marker also blocks every subsequent operation.
+            report("cleanup-uncertain", reason="Docker mutation outcome requires operator review")
+            # The supervisor retains the lock; inherited FDs are not trusted across Go plugins.
+            for sig in handlers:
+                signal.signal(sig, signal.SIG_IGN)
+            if process is not None:
+                for sig in (signal.SIGTERM, signal.SIGKILL):
+                    try:
+                        os.killpg(process.pid, sig)
+                    except ProcessLookupError:
+                        break
+                    if sig == signal.SIGTERM:
+                        time.sleep(2)
+                process.wait()
+                while True:
+                    try:
+                        while os.waitpid(-process.pid, os.WNOHANG)[0]:
+                            pass
+                    except ChildProcessError:
+                        pass
+                    try:
+                        os.killpg(process.pid, 0)
+                    except ProcessLookupError:
+                        break
+                    time.sleep(0.05)
+            raise
+        finally:
+            for sig, handler in handlers.items():
+                signal.signal(sig, handler)
+
+    def capacity(self):
+        self.validate_lock()
+        root = self.docker("info", "--format", "{{.DockerRootDir}}")
+        disk = os.statvfs(root)
+        return disk.f_bavail * disk.f_frsize
+
+    def cache(self):
+        self.validate_lock()
+        before = self.capacity()
+        # Buildx du's until filter is unreliable; inspect unfiltered metadata instead.
+        rows = [json.loads(line) for line in self.docker(
+            "buildx", "du", "--builder", "default", "--format", "json"
+        ).splitlines() if line]
+        if any(not isinstance(row, dict) for row in rows):
+            raise ValueError("Invalid Buildx usage metadata")
+        eligible = []
+        unknown_age = []
+        now = datetime.datetime.now(datetime.timezone.utc).timestamp()
+        for row in rows:
+            if not isinstance(row.get("Reclaimable"), bool):
+                unknown_age.append(row.get("ID"))
+                continue
+            try:
+                age = now - timestamp(row["LastUsedAt"]) if row.get("Reclaimable") is True else 0
+                if row.get("Reclaimable") is True and age > GRACE:
+                    eligible.append(row["ID"])
+            except (KeyError, TypeError, ValueError):
+                if row.get("Reclaimable") is True:
+                    unknown_age.append(row.get("ID"))
+        report("cache-before", free_bytes=before, usage=rows,
+               eligible=[] if unknown_age else eligible, age_eligible=eligible,
+               protected=[row.get("ID") for row in rows
+                          if unknown_age or row.get("ID") not in eligible])
+        if unknown_age:
+            report("cache-prune-skipped", reason="reclaimable cache age unknown", ids=unknown_age)
+        elif self.apply:
+            self.docker("buildx", "prune", "--builder", "default", "--filter", "until=168h",
+                        "--max-used-space", "5368709120", "--force")
+        report("cache-after", free_bytes=self.capacity(), usage=self.docker(
+            "buildx", "du", "--builder", "default", "--format", "json"))
+
+    def containers(self):
+        ids = self.docker("container", "ls", "--all", "--quiet", "--no-trunc").splitlines()
+        if len(ids) > 1000 or any(not re.fullmatch(r"[0-9a-f]{64}", i) for i in ids):
+            raise ValueError("Invalid or excessive container inventory")
+        return [json.loads(self.docker("container", "inspect", i))[0] for i in ids]
+
+    def ledger(self, protection=True):
+        records = self.read_json("success.json")
+        if not isinstance(records, list) or len(records) > 10000:
+            raise ValueError("Invalid success ledger")
+        for record in records:
+            if (not isinstance(record, dict) or set(record) != {"sha", "digest", "at"}
+                    or not isinstance(record["sha"], str) or not isinstance(record["digest"], str)
+                    or not SHA.fullmatch(record["sha"]) or not DIGEST.fullmatch(record["digest"])
+                    or type(record["at"]) not in (int, float)
+                    or type(record["at"]) is float and not math.isfinite(record["at"])
+                    or not 0 < record["at"] <= datetime.datetime.now().timestamp()):
+                raise ValueError("Invalid success record")
+        for sha in {r["sha"] for r in records}:
+            if len({r["digest"] for r in records if r["sha"] == sha}) != 1:
+                raise ValueError("Conflicting successful SHA digests")
+        if not protection:
+            return records
+        protected = self.read_json("protect.json")
+        if (not isinstance(protected, list) or len(protected) > 1000
+                or any(not isinstance(s, str) or not SHA.fullmatch(s) for s in protected)
+                or not INITIAL_PROTECTED.issubset(protected)):
+            raise ValueError("Explicit protection file missing required initial SHAs")
+        latest = list(dict.fromkeys(r["sha"] for r in sorted(
+            records, key=lambda r: r["at"], reverse=True)))[:3]
+        return records, set(protected) | set(latest)
+
+    def read_json(self, name):
+        self.validate_lock()
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=self.dir_fd)
+        with os.fdopen(fd) as stream:
+            info = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                    or info.st_size > 4 * 1024 * 1024 or info.st_mode & 0o022):
+                raise ValueError("Unsafe cleanup state")
+            return json.load(stream)
+
+    def eligible(self, container, known, protected):
+        match = NAME.fullmatch(container["Name"])
+        if not match:
+            return False
+        sha = match[1]
+        labels = container["Config"].get("Labels") or {}
+        return (sha in known and sha not in protected
+                and labels.get("service") == "prosecho" and labels.get("role") == "web"
+                and container["Config"]["Image"] == f"{REPOSITORY}:{sha}"
+                and container["State"]["Status"] == "exited"
+                and not container["State"]["Running"]
+                and datetime.datetime.now().timestamp() - known[sha]["at"] > GRACE
+                and datetime.datetime.now().timestamp()
+                - timestamp(container["State"]["FinishedAt"]) > GRACE)
+
+    def releases(self):
+        try:
+            records, protected = self.ledger()
+            known = {r["sha"]: r for r in sorted(records, key=lambda r: r["at"])}
+            inventory = self.containers()
+            running_images = {c["Image"] for c in inventory if c["State"]["Running"]}
+            # Protect every running container's image, including non-application containers.
+            for c in inventory:
+                if c["State"]["Running"]:
+                    protected.update(s for s in known if c["Config"]["Image"]
+                                     == f"{REPOSITORY}:{s}")
+            protected.update(NAME.fullmatch(c["Name"])[1] for c in inventory
+                             if NAME.fullmatch(c["Name"]) and c["Image"] in running_images)
+            remaining = 20
+            for c in inventory:
+                if not self.eligible(c, known, protected):
+                    continue
+                self.validate_lock()
+                fresh = json.loads(self.docker("container", "inspect", c["Id"]))[0]
+                if fresh["Id"] != c["Id"] or not self.eligible(fresh, known, protected):
+                    continue
+                sha = NAME.fullmatch(fresh["Name"])[1]
+                image = json.loads(self.docker("image", "inspect", fresh["Image"]))[0]
+                if (image["Id"] != fresh["Image"]
+                        or f"{REPOSITORY}@{known[sha]['digest']}" not in (image.get("RepoDigests") or [])
+                        or any(other["State"]["Running"] and (other["Image"] == fresh["Image"]
+                               or other["Config"]["Image"] == f"{REPOSITORY}:{sha}")
+                               for other in self.containers())):
+                    continue
+                report("container", id=c["Id"], apply=self.apply)
+                if self.apply:
+                    self.docker("container", "rm", c["Id"])
+                remaining -= 1
+                if remaining == 0:
+                    return
+            for sha, record in known.items():
+                if sha in protected or datetime.datetime.now().timestamp() - record["at"] <= GRACE:
+                    continue
+                ref = f"{REPOSITORY}:{sha}"
+                # Missing local tags are normal. Failed Docker inspection is otherwise fail-closed.
+                if ref not in self.docker("image", "ls", "--format", "{{.Repository}}:{{.Tag}}").splitlines():
+                    continue
+                self.validate_lock()
+                image = json.loads(self.docker("image", "inspect", ref))[0]
+                if f"{REPOSITORY}@{record['digest']}" not in (image.get("RepoDigests") or []):
+                    continue
+                if any(c["Image"] == image["Id"] or c["Config"]["Image"] == ref
+                       for c in self.containers()):
+                    continue
+                report("image", ref=ref, apply=self.apply)
+                if self.apply:
+                    self.validate_lock()
+                    self.docker("image", "rm", "--no-prune", ref)
+                remaining -= 1
+                if remaining == 0:
+                    return
+        except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+            report("release-cleanup-skipped", reason=type(error).__name__)
+
+    def success(self, sha, digest):
+        if not SHA.fullmatch(sha) or not DIGEST.fullmatch(digest):
+            raise ValueError("Invalid success identity")
+        self.validate_lock()
+        c = json.loads(self.docker("container", "inspect", f"prosecho-web-{sha}"))[0]
+        labels = c["Config"].get("Labels") or {}
+        image = json.loads(self.docker("image", "inspect", c["Image"]))[0]
+        if (not c["State"]["Running"] or c["Config"]["Image"] != f"{REPOSITORY}:{sha}"
+                or labels.get("service") != "prosecho" or labels.get("role") != "web"
+                or f"{REPOSITORY}@{digest}" not in (image.get("RepoDigests") or [])):
+            raise ValueError("Active container does not match successful artifact")
+        request = urllib.request.Request("http://127.0.0.1:8080/ready",
+                                         headers={"Host": "prosecho.menloparking.com"})
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+        with opener.open(request, timeout=10) as response:
+            if response.status != 200:
+                raise ValueError("Routed readiness is not 200")
+        records = self.ledger(protection=False) if os.path.lexists(STATE / "success.json") else []
+        if any(r["sha"] == sha and r["digest"] != digest for r in records):
+            raise ValueError("Success digest changed")
+        records.append({"sha": sha, "digest": digest, "at": datetime.datetime.now().timestamp()})
+        if len(records) > 10000:
+            raise ValueError("Success ledger needs operator review")
+        self.validate_lock()
+        name = "success-" + secrets.token_hex(12)
+        fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                     0o600, dir_fd=self.dir_fd)
+        try:
+            with os.fdopen(fd, "w") as stream:
+                json.dump(records, stream)
+                stream.flush()
+                os.fsync(stream.fileno())
+            self.validate_lock()
+            os.replace(name, "success.json", src_dir_fd=self.dir_fd, dst_dir_fd=self.dir_fd)
+            os.fsync(self.dir_fd)
+        finally:
+            try:
+                os.unlink(name, dir_fd=self.dir_fd)
+            except FileNotFoundError:
+                pass
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args):
+        return None
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--apply", action="store_true")
+    mode.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--cache-only", action="store_true")
+    parser.add_argument("--hold-lock", action="store_true",
+                        help="Deployment protocol: hold the lock until stdin EOF")
+    args = parser.parse_args()
+    if args.hold_lock and not args.apply:
+        parser.error("--hold-lock requires --apply")
+    if args.hold_lock and args.cache_only:
+        parser.error("--hold-lock cannot be combined with --cache-only")
+    try:
+        cleanup = Cleanup(args.apply)
+    except BlockingIOError:
+        report("lock-busy")
+        return 75
+    if args.hold_lock:
+        if cleanup.capacity() < 4 * 1024**3:
+            cleanup.cache()
+        available = int(next(line.split()[1] for line in Path("/proc/meminfo").read_text()
+                             .splitlines() if line.startswith("MemAvailable:")))
+        if cleanup.capacity() < 4 * 1024**3 or available < 2 * 1024**2:
+            raise ValueError("Insufficient deployment disk/memory capacity")
+        print("LOCKED", flush=True)
+        for line in sys.stdin:
+            request = json.loads(line)
+            cleanup.success(request["sha"], request["digest"])
+            print("RECORDED", flush=True)
+            try:
+                cleanup.cache()
+                cleanup.releases()
+            except (OSError, ValueError, subprocess.SubprocessError) as error:
+                report("cleanup-warning", reason=type(error).__name__)
+            print("CLEANED", flush=True)
+    else:
+        cleanup.cache()
+        if not args.cache_only:
+            cleanup.releases()
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+        report("cleanup-failed", reason=type(error).__name__,
+               message=str(error) if isinstance(error, ValueError) else "Inspect guest state/logs")
+        sys.exit(1)

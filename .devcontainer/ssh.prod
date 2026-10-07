@@ -1,14 +1,11 @@
-Host prosecho-deploy-cloudflare
-  HostName prosecho-deploy-cloudflare
+Host ssh-prosecho.menloparking.com
+  HostName ssh-prosecho.menloparking.com
   User deploy
-  IdentityAgent /run/prosecho/agent.sock
-  IdentityFile /run/prosecho/deploy.pub
-  IdentitiesOnly yes
   ForwardAgent no
   BatchMode yes
   PreferredAuthentications publickey
   StrictHostKeyChecking yes
-  UserKnownHostsFile /run/prosecho/known_hosts
+  UserKnownHostsFile /prosecho/.devcontainer/production_known_hosts
   GlobalKnownHostsFile /dev/null
   ProxyCommand cloudflare-ssh
   ServerAliveInterval 15

@@ -20,7 +20,6 @@ services:
       - ${HOME}/.local/share/menloparking/prosecho/agent.sock:/run/prosecho/agent.sock:ro
       - ${HOME}/.local/share/menloparking/prosecho/creds/deploy.pub:/run/prosecho/deploy.pub:ro
       - ${HOME}/.local/share/menloparking/prosecho/creds/known_hosts:/run/prosecho/known_hosts:ro
-      - ${HOME}/.local/share/menloparking/prosecho/creds/service-token.json:/run/prosecho/service-token.json:ro
       - ${HOME}/.local/share/menloparking/prosecho/creds/app.env:/run/prosecho/app.env:ro
     userns_mode: "keep-id:gid=100"
     security_opt:

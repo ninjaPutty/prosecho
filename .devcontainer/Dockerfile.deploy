@@ -5,14 +5,13 @@ USER root
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
 COPY --from=node /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
 COPY verify-ai-clis.sh /usr/local/bin/verify-ai-clis
+COPY install-cloudflared.sh /usr/local/bin/install-cloudflared
 COPY --from=docker /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=docker /usr/local/libexec/docker/cli-plugins/docker-buildx /usr/local/libexec/docker/cli-plugins/docker-buildx
 RUN usermod -g 100 vscode && apt-get update && \
-    apt-get install -y --no-install-recommends curl jq openssh-client postgresql-client && \
+    apt-get install -y --no-install-recommends curl jq openssh-client postgresql-client python3 && \
     rm -rf /var/lib/apt/lists/* && \
-    curl -fsSL https://github.com/cloudflare/cloudflared/releases/download/2026.5.2/cloudflared-linux-amd64 -o /usr/local/bin/cloudflared && \
-    printf '%s  %s\n' 5286698547f03df745adb2355f04c12dde52ef425491e81f433642d695521886 /usr/local/bin/cloudflared | sha256sum -c - && \
-    chmod 755 /usr/local/bin/cloudflared && \
+    sh /usr/local/bin/install-cloudflared && \
     mkdir -p /home/vscode/.ssh && chown vscode:100 /home/vscode/.ssh && chmod 700 /home/vscode/.ssh
 COPY --chown=vscode:100 ssh.deploy /home/vscode/.ssh/config
 RUN chmod 600 /home/vscode/.ssh/config && docker --version && docker buildx version && cloudflared --version

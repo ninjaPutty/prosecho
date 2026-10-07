@@ -3,6 +3,7 @@ require "open3"
 require "fileutils"
 require "tmpdir"
 require "timeout"
+require "json"
 
 module ProsechoDeploy
   HOST = "prosecho-deploy-cloudflare"
@@ -64,14 +65,13 @@ module ProsechoDeploy
 
   LOCK = <<~SH.freeze
     set -eu
-    mkdir -p "$HOME/.local/share/prosecho"
-    exec 9>"$HOME/.local/share/prosecho/deploy.lock"
-    flock -n 9
+    exec prosecho-cleanup --apply --hold-lock
+  SH
+  CAPACITY = <<~SH.freeze
+    set -eu
     root=$(docker info --format '{{.DockerRootDir}}')
     test "$(df -Pk "$root" | awk 'NR==2 {print $4}')" -ge 4194304
     test "$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)" -ge 2097152
-    printf 'LOCKED\n'
-    cat >/dev/null
   SH
   POSTGRES_WAIT = <<~SH.freeze
     set -eu
@@ -219,7 +219,7 @@ module ProsechoDeploy
     lock = IO.popen(["ssh", HOST, LOCK], "r+", pgroup: true)
     begin
       begin
-        raise Failure, "Target lock/capacity check failed" unless Timeout.timeout(30) { lock.gets } == "LOCKED\n"
+        raise Failure, "Target lock/capacity check failed" unless Timeout.timeout(210) { lock.gets } == "LOCKED\n"
       rescue Timeout::Error
         raise Failure, "Target lock/capacity check timed out"
       end
@@ -237,9 +237,24 @@ module ProsechoDeploy
           raise Failure, "Immutable SHA artifact changed" unless runner.run("ssh", HOST, artifact_script(sha), capture: true, timeout: 30) == artifact
         end
         kind = %w[bootstrap app-query database].include?(command.first) ? command.shift : nil
+        activation = command.include?("redeploy") || command.include?("rollback")
+        runner.run("ssh", HOST, CAPACITY, timeout: 30) if kind == "database" || activation
         runner.run(*command, input: phase_input(kind, secrets), capture: !kind.nil?, timeout: push ? 1800 : 300)
         artifact = runner.run("ssh", HOST, artifact_script(sha, record: true), capture: true, timeout: 30) if push
         raise Failure, "Build did not publish the SHA artifact" if artifact == "new"
+      end
+      runner.check_lock!
+      lock.puts JSON.generate(sha: sha, digest: artifact)
+      lock.flush
+      begin
+        raise Failure, "Successful-release verification/recording failed" unless Timeout.timeout(60) { lock.gets } == "RECORDED\n"
+      rescue Timeout::Error
+        raise Failure, "Successful-release verification/recording timed out; inspect guest state"
+      end
+      begin
+        warn "Post-release cleanup did not finish; inspect guest cleanup logs" unless Timeout.timeout(600) { lock.gets } == "CLEANED\n"
+      rescue Timeout::Error
+        warn "Post-release cleanup timed out; release is recorded, inspect guest state"
       end
     ensure
       runner.lock = nil
