@@ -1,14 +1,28 @@
-# Suggested source descriptions for the admin form. Saved DataPolicy records
-# are authoritative; this YAML does not confirm data decisions or set retention.
+# Editable starting suggestions for the admin form. Saved DataPolicy records
+# are authoritative; these defaults do not confirm decisions or run cleanup.
 data:
+  address_handling: >-
+    Use active Home-type locations only. Leave missing or ambiguous home addresses
+    unknown; do not guess from Previous, mailing, or mapped flags.
   address_source: Person.PrimaryFamilyId -> GroupLocations (Home type) -> Location
   approved_at:
   approved_by:
   attribute_keys: []
+  backup_retention_days: 30
   family_status_meaning: Observed engagement category, not marriage or household composition
+  history_retention_days: 365
+  household_handling: >-
+    Record active household membership and roles as facts. Campus-scoped membership
+    is incomplete; do not infer births, marriages, divorces, deaths, or member removals
+    from an incomplete household view.
   household_source: >-
     PrimaryFamilyId -> active non-archived GroupMembers with Adult or Child GroupRole
-  retention_days:
+  log_retention_days: 90
+  profile_retention_days: 90
+  retention_notes: >-
+    Profile retention starts after a complete successful refresh marks a person
+    outside the synchronized population. Apply the separate history, log, and backup
+    periods to their respective stores; a failed refresh does not establish departure.
 maps:
   approved_at:
   approved_by:

@@ -14,6 +14,7 @@ class DataPolicyValidationTest < ActiveSupport::TestCase
 
   test "confirmation requires complete rules retention and attribution" do
     attributes = DataPolicy.default_attributes.merge(
+      address_handling: "", history_retention_days: nil,
       recorded_by: users(:administrator), status: "confirmed"
     )
     policy = DataPolicy.new(attributes)

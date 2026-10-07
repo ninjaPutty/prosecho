@@ -128,6 +128,14 @@ server records the administrator and confirmation time. Reverting to draft clear
 blocks data readiness. Revision checks prevent stale browser forms from overwriting another
 administrator's changes. Policy edits are audited using actor/resource IDs.
 
+New forms start with editable retention suggestions: 90 days for profiles after leaving the
+population, 365 days for change history, 90 days for audit logs, and 30 days for backups. Suggested
+rules leave missing/ambiguous Home addresses unknown and treat scoped household membership as
+incomplete facts, not evidence of life events. All supported profile fields start selected; custom
+attributes start empty. Draft forms suggest values for unanswered retention/source/handling fields
+without changing saved choices or saving on page load. Review, edit, and save the form to adopt them;
+confirmation remains an explicit administrator choice.
+
 Data-policy readiness, directory readiness (data decisions plus a runtime Rock connection), and map
 readiness are evaluated separately. Missing map hosts do not block directory readiness. No saved
 decision enables live synchronization, writes Rock, deletes records, or configures a backup

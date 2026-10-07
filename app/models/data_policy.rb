@@ -43,11 +43,18 @@ class DataPolicy < ApplicationRecord
 
   def self.default_attributes
     data = YAML.safe_load_file(Rails.root.join("config/pastoral.yml")).fetch("data")
-    {
-      address_source: data["address_source"], attribute_keys: data["attribute_keys"],
-      family_status_meaning: data["family_status_meaning"],
-      household_source: data["household_source"], selected_fields: FIELD_LABELS.keys
-    }
+    fields = RETENTION_FIELDS + TEXT_FIELDS + %i[attribute_keys retention_notes]
+    data.slice(*fields.map(&:to_s)).symbolize_keys.merge(selected_fields: FIELD_LABELS.keys)
+  end
+
+  def apply_form_defaults
+    return self if confirmed?
+
+    # Suggestions belong to the edit form, not the persisted readiness decision.
+    self.class.default_attributes.slice(*(RETENTION_FIELDS + TEXT_FIELDS)).each do |field, value|
+      self[field] = value if self[field].blank?
+    end
+    self
   end
 
   def attribute_keys_text

@@ -3,6 +3,50 @@ require "test_helper"
 class DataPolicyTest < ActionDispatch::IntegrationTest
   include Devise::Test::IntegrationHelpers
 
+  test "new decisions offer editable defaults that can be confirmed and customized" do
+    sign_in users(:administrator)
+    get admin_data_policy_path
+    assert_response :success
+    {profile: 90, history: 365, log: 90, backup: 30}.each do |name, days|
+      assert_select "input[name='data_policy[#{name}_retention_days]'][value='#{days}']" do
+        assert_select "[readonly], [disabled]", count: 0
+      end
+    end
+    assert_select "textarea[name='data_policy[address_handling]']", text: /unknown/i
+    assert_select "textarea[name='data_policy[household_handling]']", text: /membership/i
+    assert_select "option[value='draft'][selected]"
+    assert_equal 0, DataPolicy.count
+
+    decisions = DataPolicy.default_attributes.merge(revision: policy_revision,
+      profile_retention_days: 120, address_handling: "Keep ambiguous homes unknown.",
+      status: "confirmed")
+    patch admin_data_policy_path, params: {data_policy: decisions}
+    assert_redirected_to admin_data_policy_path
+    policy = DataPolicy.current
+    assert policy.confirmed?
+    assert_equal 120, policy.profile_retention_days
+    assert_equal "Keep ambiguous homes unknown.", policy.address_handling
+    assert_empty policy.attribute_keys
+    assert_empty Pastoral::Configuration.load(environment: {}).data_blockers
+  end
+
+  test "draft forms suggest missing defaults without overwriting saved choices" do
+    policy = DataPolicy.create!(recorded_by: users(:administrator), status: "draft",
+      history_retention_days: 180, address_source: "Chosen home source",
+      selected_fields: DataPolicy::MINIMUM_FIELDS, attribute_keys: [])
+    sign_in users(:administrator)
+    get admin_data_policy_path
+    assert_response :success
+    assert_select "input[name='data_policy[history_retention_days]'][value='180']"
+    assert_select "input[name='data_policy[backup_retention_days]'][value='30']"
+    assert_select "textarea[name='data_policy[address_source]']", text: "Chosen home source"
+    assert_select "textarea[name='data_policy[household_handling]']", text: /membership/i
+    assert_select "input[value='photo'][checked]", count: 0
+    assert_nil policy.reload.backup_retention_days
+    assert_empty policy.household_handling
+    assert_not policy.confirmed?
+  end
+
   test "administrator can save a partial draft and return to it" do
     sign_in users(:administrator)
     get admin_data_policy_path

@@ -1,7 +1,7 @@
 module Admin
   class DataPoliciesController < BaseController
     def show
-      render_policy(DataPolicy.current)
+      render_policy(DataPolicy.current.apply_form_defaults)
     end
 
     def update

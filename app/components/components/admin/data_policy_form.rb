@@ -10,6 +10,7 @@ module Components
           p(class: "mb-6 text-stone-600") do
             plain "Record retention periods and the initial Rock data contract."
             plain " You can save a draft while deciding."
+            plain " Unanswered draft fields start with editable suggestions; saved choices are kept."
             plain " This page does not import or delete people."
           end
           if @policy.persisted?
@@ -20,7 +21,7 @@ module Components
           else
             p(class: "mb-6 text-sm text-stone-600") do
               plain "No decisions saved yet."
-              plain " Source descriptions below are suggested from Rock discovery."
+              plain " The values below are editable starting suggestions based on Rock discovery."
             end
           end
           errors_for(@policy)
