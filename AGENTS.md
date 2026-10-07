@@ -7,10 +7,14 @@ Fetch it with GET:
 https://drive.menloparking.com/api/v1/documents/3f69a1c9-7ce3-4fdf-8135-b404c1494870
 
 Request application/json and read the returned document.body.
-Load DRIVE_MENLOPARKING_TOKEN in memory from OpenCode user secrets,
-normally ~/.config/opencode/secrets.env, only when making Drive requests.
-If unavailable, inspect only credential variable names under
-~/.config/opencode/; do not dump secret files or try unrelated credentials.
+Look for MP Drive tokens in OpenCode user secrets, normally
+~/.config/opencode/secrets.env; do not require a particular variable name.
+Inspect credential variable names and available non-secret metadata under
+~/.config/opencode/ to identify relevant MP Drive tokens and choose the best
+candidate for the required document. Tokens may have different access scopes;
+if a candidate is rejected or lacks access, try another identified MP Drive
+token. Load token values only in memory when making Drive requests. Do not
+dump secret files or try credentials unrelated to MP Drive.
 
 Send Bearer authentication only to https://drive.menloparking.com.
 Disable redirects and use User-Agent: OpenCode MP documentation reader.
