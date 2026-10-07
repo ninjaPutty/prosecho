@@ -44,6 +44,12 @@ Do not use person-creation, update, delete, or other write endpoints when inspec
 
 ## Authentication attempts and outcomes
 
+The Chapel v1 `GroupLocations` query returns HTTP 500 when projecting
+`Location/Latitude,Location/Longitude`. The same scoped page succeeds with street, postal code,
+town, and active-location fields. Home-address reads omit those coordinate projections so directory
+refreshes can complete; coordinates remain unset pending a verified map-phase read path. Do not
+exclude address rows merely because coordinates are unavailable.
+
 Use `Authorization-Token` for the legacy v1 REST-key flow demonstrated in Rock's guide. These
 alternative forms did not yield a usable read in the checks documented here:
 

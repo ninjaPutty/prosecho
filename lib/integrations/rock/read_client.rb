@@ -23,8 +23,19 @@ module Integrations
           "$top" => page_limit(limit), "$skip" => page_offset(offset))
       end
 
-      def home_locations(family_id, limit: 100, offset: 0)
-        get_resource("GroupLocations", "$filter" => "GroupId eq #{identifier(family_id)}",
+      def home_locations(family_id, limit: 100, offset: 0, precise: true)
+        raise ArgumentError, "Invalid address permission" unless [true, false].include?(precise)
+        columns = %w[Id LocationId GroupLocationTypeValue/Value Location/Id Location/IsActive
+          Location/City Location/State Location/Country]
+        if precise
+          # Chapel's v1 OData coordinate projection returns HTTP 500 even when
+          # the same Home address reads successfully. Keep addresses usable;
+          # coordinates need a separately verified map-phase read path.
+          columns += %w[Location/Street1 Location/Street2 Location/PostalCode]
+        end
+        get_resource("GroupLocations", "$filter" => "GroupId eq #{identifier(family_id)} " \
+          "and GroupLocationTypeValue/Value eq 'Home'", "$orderby" => "Id",
+          "$select" => columns.join(","),
           "$expand" => "Location,GroupLocationTypeValue",
           "$top" => page_limit(limit), "$skip" => page_offset(offset))
       end

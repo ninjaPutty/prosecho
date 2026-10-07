@@ -75,4 +75,19 @@ class RockReadClientTest < ActiveSupport::TestCase
       assert_not error.message.include?("synthetic-private-payload")
     end
   end
+
+  test "precise home reads retain addresses without unsupported Rock coordinate projections" do
+    requests = []
+    reader = client(transport: ->(request) do
+      requests << request
+      []
+    end)
+    reader.home_locations(301, precise: true)
+    columns = URI.decode_www_form(requests.first.uri.query).to_h.fetch("$select").split(",")
+    %w[Location/Street1 Location/Street2 Location/PostalCode Location/City].each do |column|
+      assert_includes columns, column
+    end
+    assert_not_includes columns, "Location/Latitude"
+    assert_not_includes columns, "Location/Longitude"
+  end
 end
