@@ -167,6 +167,15 @@ using the host's reviewed Nix package with a pinned Python interpreter. This is
 an infrastructure integration requirement, not provisioned by the app helper.
 The Nix runner must execute this single script as `deploy`, with pinned Python 3
 and Docker/Buildx on PATH; do not duplicate the cleanup policy in a shell wrapper.
+`config/cleanup-runner.nix` packages this runner. Infrastructure supplies the
+exact guest Bash, coreutils, Docker and Python store paths, and the reviewed
+cleanup source. The package retains those dependency identities and copies the
+script into the Nix store. It may be installed in the deploy user's Nix profile,
+which is already on the default login PATH; no system switch is required.
+Build and install under the existing validated deployment lock, after checking
+for uncertainty markers and verifying the installed source checksum. Preserve
+other profile packages and never substitute an unmanaged interpreter or PATH.
+Changing the cleanup policy or pinned tools requires a reviewed package rebuild.
 The script uses Linux process groups and `prctl` via Python's stdlib `ctypes` to
 supervise Docker CLI/plugin descendants. No additional Python packages are required.
 Guest Docker 29.6.2, BuildKit 0.31 and Buildx 0.31 are distinct from the client
@@ -416,6 +425,20 @@ because its PID disappeared, or use a timer to clear it. If daemon activity cann
 be established confidently, retain the marker and stop deployments/cleanup.
 
 ## Local Verification
+
+On 2026-10-08, the runner package built on the guest from the exact application
+cleanup source, SHA-256
+`68cc34d5456f76cb0c681826807f119cfa5c4d9aaf56cf26429edc6d9835c60b`.
+The deployed package is
+`/nix/store/5r3c3ck0mjspq3yrmhg5511hz82arm1f-prosecho-cleanup`, rooted by the
+deploy user's Nix profile. It pins Python 3.13.14, Docker 29.6.2 and its Buildx
+0.31.1, with Bash/coreutils from the existing guest installation.
+Default-PATH `--help` and real `--dry-run` passed. Contention returned 75 before
+Docker queries; the existing lock device/inode stayed `64770:3014673`.
+Cache cleanup conservatively skipped the guest's relative-age metadata, and
+release cleanup skipped absent success history. No cache or release deletion
+was performed. Origin `/ready` remained 200. This is runner verification,
+not evidence of a new application deployment.
 
 `bin/check` exercises `/ready` against real local PostgreSQL: healthy 200,
 unreachable database 503, and a real unapplied migration 503. It also bootstraps
