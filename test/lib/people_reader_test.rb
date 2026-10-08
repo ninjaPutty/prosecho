@@ -133,4 +133,58 @@ class PeopleReaderTest < ActiveSupport::TestCase
       Integrations::Rock::PeopleReader.new(actor: @actor, client: client).read_page(limit: 501)
     end
   end
+
+  test "an administrator import reads all campuses and policy-approved sensitive fields without viewer grants" do
+    actor = users(:administrator)
+    inactive = Campus.create!(name: "Inactive Example", rock_id: 100003, active: false)
+    run = PersonRefreshRun.start!(actor: actor)
+    assert actor.campuses.empty?
+    assert_not actor.view_photos?
+    assert_not actor.view_locations?
+    calls = []
+    row = @row.merge("PrimaryCampusId" => campuses(:south).rock_id)
+    client = fake_client(row: row) { |operation, options| calls << [operation, options] }
+    page = Integrations::Rock::PeopleReader.new(actor: actor, client: client, import_run: run).read_page
+    assert_equal Campus.order(:rock_id).pluck(:rock_id), calls.first.last[:campus_ids].sort
+    assert_includes calls.first.last[:campus_ids], inactive.rock_id
+    assert_includes calls.first.last[:fields], "photo"
+    assert calls.find { |call| call.first == :home_locations }.last[:precise]
+    assert_equal campuses(:south).id, page.people.first.campus[:id]
+    assert_empty PersonProfile.visible_to(actor)
+  end
+
+  test "import mode cannot be used by staff or by another actor and rechecks administrator status" do
+    actor = users(:administrator)
+    run = PersonRefreshRun.start!(actor: actor)
+    client = fake_client { |*_| flunk "unauthorized import must not read Rock" }
+    assert_raises(Integrations::Rock::PeopleReader::NotAuthorized) do
+      Integrations::Rock::PeopleReader.new(actor: @actor, client: client, import_run: run).read_page
+    end
+    client = fake_client do |operation, _|
+      actor.update!(role: "staff") if operation == :people
+      flunk "demotion must prevent related reads" unless operation == :people
+    end
+    assert_raises(Integrations::Rock::PeopleReader::NotAuthorized) do
+      Integrations::Rock::PeopleReader.new(actor: actor, client: client, import_run: run).read_page
+    end
+  end
+
+  test "large import scopes partition and fully paginate household reads without truncation" do
+    10.times do |index|
+      Campus.create!(name: "Catalog Example #{index}", rock_id: 100003 + index)
+    end
+    actor = users(:administrator)
+    run = PersonRefreshRun.start!(actor: actor)
+    calls = []
+    client = fake_client
+    client.define_singleton_method(:household_members) do |_, **options|
+      calls << options
+      options[:offset].zero? ? Array.new(100, {}) : []
+    end
+    page = Integrations::Rock::PeopleReader.new(actor: actor, client: client, import_run: run).read_page
+    assert_equal 1, page.people.size
+    assert_equal [0, 100, 0, 100], calls.map { |call| call[:offset] }
+    assert_equal [8, 8, 4, 4], calls.map { |call| call[:campus_ids].size }
+    assert_equal Campus.pluck(:rock_id).sort, calls.flat_map { |call| call[:campus_ids] }.uniq.sort
+  end
 end

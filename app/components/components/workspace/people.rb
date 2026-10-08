@@ -21,7 +21,7 @@ module Components
                 plain "A familiar face, a clearer picture, a thoughtful next step."
               end
             end
-            if @query.confirmed?
+            if @actor.administrator? && @query.confirmed?
               post_form(action: view_context.workspace_refresh_path) do
                 if @run&.resumable?
                   input(type: "hidden", name: "resume_run_id", value: @run.id)
@@ -37,6 +37,9 @@ module Components
                   end
                   plain label
                 end
+              end
+              p(class: "mt-2 text-xs text-stone-500") do
+                plain "Refresh imports every campus, regardless of your current filters."
               end
             end
           end
@@ -87,7 +90,7 @@ module Components
                   if @run.resumable?
                     plain "Correct the issue, then retry from the saved checkpoint."
                   else
-                    plain "Access or data decisions no longer match this checkpoint; start a new refresh."
+                    plain "Administrator authorization or import scope no longer matches; start a new refresh."
                   end
                 else
                   plain "This run has no retained checkpoint; start a new refresh."

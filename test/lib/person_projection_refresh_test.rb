@@ -8,7 +8,7 @@ class PersonProjectionRefreshTest < ActiveSupport::TestCase
 
   setup do
     @policy = confirm_directory_policy
-    @actor = users(:staff)
+    @actor = users(:administrator)
     @run = PersonRefreshRun.start!(actor: @actor)
     row = JSON.parse(file_fixture("rock_person.json").read)
     @person = Integrations::Rock::PersonMapper.new(fields: DataPolicy::FIELD_LABELS.keys,
@@ -157,6 +157,27 @@ class PersonProjectionRefreshTest < ActiveSupport::TestCase
     assert_empty @run.entries
   end
 
+  test "publication repairs legacy nameless staging without reading Rock or dropping the person" do
+    data = @person.to_h.as_json.merge("display_name" => "",
+      "names" => {"first_name" => nil, "last_name" => nil, "nick_name" => nil})
+    @run.entries.create!(rock_guid: @person.rock_guid, payload: data, observed_at: Time.current)
+    @run.update!(read_complete: true, page_count: 161, next_offset: 40000)
+    Directory::Refresh.new(run: @run, reader: reader { |**_| flunk "must not redownload" }).call
+    assert_equal "succeeded", @run.reload.status
+    assert_equal 1, @run.imported_count
+    profile = PersonProfile.find_by!(rock_guid: @person.rock_guid)
+    assert_equal "Unnamed person (Rock #101)", profile.display_name
+    assert_nil profile.first_name
+    assert_nil profile.last_name
+    assert_includes profile.issues, "person_name_missing"
+    assert_equal "?", profile.initials
+    assert_empty @run.entries
+    Directory::Refresh.new(run: PersonRefreshRun.start!(actor: @actor),
+      reader: reader { |**_| page }).call
+    assert_equal @person.display_name, profile.reload.display_name
+    assert_not_includes profile.issues, "person_name_missing"
+  end
+
   test "a repeated cursor fails safely without discarding previous pages" do
     fake = reader { |offset:, **_| page(offset: offset, next_offset: offset + 50) }
     Directory::Refresh.new(run: @run, reader: fake).call
@@ -292,12 +313,12 @@ class PersonProjectionRefreshTest < ActiveSupport::TestCase
     assert_nil profile.private_observed_at
   end
 
-  test "access changes invalidate retained staging instead of allowing publication or retry" do
+  test "administrator demotion invalidates retained staging instead of allowing publication or retry" do
     fake = reader do |offset:, **_|
       if offset.zero?
         page(next_offset: 50)
       else
-        @actor.campus_accesses.destroy_all
+        @actor.update!(role: "staff")
         page(people: [], offset: 50)
       end
     end
@@ -307,6 +328,36 @@ class PersonProjectionRefreshTest < ActiveSupport::TestCase
     assert_not @run.checkpoint_retained?
     assert_not @run.resumable?
     assert_equal "Alex Example", person_profiles(:alex).reload.display_name
+  end
+
+  test "refresh scope includes every catalog campus without administrator campus grants" do
+    inactive = Campus.create!(name: "Inactive Example", rock_id: 100003, active: false)
+    @run.update!(status: "succeeded")
+    run = PersonRefreshRun.start!(actor: @actor)
+    assert @actor.campuses.empty?
+    assert run.all_campuses?
+    assert_equal Campus.order(:id).pluck(:id), run.campus_ids
+    assert_includes run.campus_ids, inactive.id
+    assert run.checkpoint_authorized?
+    assert_raises(PersonRefreshRun::NotReady) do
+      PersonRefreshRun.start!(actor: users(:staff))
+    end
+  end
+
+  test "global publication includes ungranted campuses and retains policy fields behind viewer permissions" do
+    other = Integrations::Rock::PersonRecord.new(**@person.to_h.merge(
+      rock_id: 999, rock_guid: "00000000-0000-4000-8000-000000000999",
+      campus: {id: campuses(:south).id, rock_id: campuses(:south).rock_id, name: "Example South"},
+      home_address: {status: "known", location_id: 501, city: "Example Town",
+                     street1: "10 Fixture Lane", postal_code: "00000"}
+    ))
+    Directory::Refresh.new(run: @run, reader: reader { |**_| page(people: [@person, other]) }).call
+    assert_equal "succeeded", @run.reload.status
+    profile = PersonProfile.find_by!(rock_guid: other.rock_guid)
+    assert_equal 42, profile.photo_id
+    assert_equal "10 Fixture Lane", profile.private_address["street1"]
+    assert_empty PersonProfile.visible_to(@actor)
+    assert_not PersonProfile.visible_to(users(:staff)).exists?(id: profile.id)
   end
 
   test "a second refresh cannot overlap an active run" do

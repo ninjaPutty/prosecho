@@ -2,7 +2,8 @@ class PersonRefreshRun < ApplicationRecord
   class NotReady < StandardError; end
   class AlreadyRunning < StandardError; end
   ERROR_MESSAGES = {
-    "access_or_policy_changed" => "Campus access or data decisions changed. Start a new refresh.",
+    "access_or_policy_changed" => "Administrator authorization, campus catalog, or data decisions changed. " \
+      "Start a new refresh.",
     "invalid_page_contract" => "Rock returned an unexpected page or policy revision.",
     "invalid_page_cursor" => "Rock returned a page that did not advance the source ID cursor.",
     "invalid_page_size" => "The server's Rock person page size must be a whole number from 1 to 500.",
@@ -30,8 +31,8 @@ class PersonRefreshRun < ApplicationRecord
 
   def checkpoint_authorized?
     policy = DataPolicy.current
-    actor.reload.active? && !actor.access_locked? &&
-      (campus_ids - actor.campuses.active.pluck(:id)).empty? &&
+    all_campuses? && actor.reload.administrator? && !actor.access_locked? &&
+      campus_ids.any? && Campus.where(id: campus_ids).count == campus_ids.uniq.size &&
       policy.confirmed? && policy.valid? && policy.revision == policy_revision
   end
 
@@ -76,7 +77,7 @@ class PersonRefreshRun < ApplicationRecord
         raise NotReady, "This run has no retained checkpoint. Start a new refresh."
       end
       unless checkpoint_authorized?
-        raise NotReady, "Saved work no longer matches campus access or data decisions. " \
+        raise NotReady, "Saved work no longer matches administrator authorization, catalog, or data decisions. " \
           "Start a new refresh."
       end
       update!(status: "queued", error_code: nil, finished_at: nil, retry_at: nil)
@@ -86,20 +87,30 @@ class PersonRefreshRun < ApplicationRecord
     raise AlreadyRunning, "A directory refresh is already queued or running"
   end
 
-  def self.start!(actor:, campus_ids: nil)
-    unless actor&.active? && !actor.access_locked? && actor.campuses.active.exists?
-      raise NotReady, "Active campus access is required"
-    end
+  def self.enqueue!(actor:)
+    authorize_administrator!(actor)
+    run = active.find_by(actor: actor, all_campuses: true) || start!(actor: actor)
+    run.dispatch!
+    run
+  end
+
+  def self.start!(actor:)
+    authorize_administrator!(actor)
     policy = DataPolicy.current
     raise NotReady, "Agreed data decisions are required" unless policy.confirmed? && policy.valid?
-    allowed_ids = actor.campuses.active.order(:id).pluck(:id)
-    requested = campus_ids || allowed_ids
-    unless requested.is_a?(Array) && requested.any? && (requested - allowed_ids).empty?
-      raise NotReady, "Choose an assigned campus for refresh"
-    end
-    create!(actor: actor, campus_ids: requested, checkpoint_retained: true, last_rock_id: 0,
+    scope = Campus.order(:id).pluck(:id)
+    raise NotReady, "Fetch the Rock campus catalog before refreshing people" if scope.empty?
+    create!(actor: actor, all_campuses: true, campus_ids: scope,
+      checkpoint_retained: true, last_rock_id: 0,
       policy_revision: policy.revision)
   rescue ActiveRecord::RecordNotUnique
     raise AlreadyRunning, "A directory refresh is already queued or running"
   end
+
+  def self.authorize_administrator!(actor)
+    unless actor&.reload&.administrator? && !actor.access_locked?
+      raise NotReady, "An active administrator is required to refresh all campuses"
+    end
+  end
+  private_class_method :authorize_administrator!
 end

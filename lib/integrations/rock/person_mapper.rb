@@ -42,6 +42,10 @@ module Integrations
         }
         preferred = names[:nick_name] || names[:first_name]
         display_name = [preferred, names[:last_name]].compact.join(" ")
+        if display_name.blank?
+          display_name = PersonRecord.unknown_name(row["Id"])
+          issues << "person_name_missing"
+        end
         birth = selected?("birth_date") ? birth_date(row, issues) : nil
         campus = @campuses.fetch(row["PrimaryCampusId"]).merge(rock_id: row["PrimaryCampusId"])
         connection = selected?("connection_status") ? lookup(row, "ConnectionStatusValue") : nil

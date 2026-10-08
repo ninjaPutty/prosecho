@@ -37,7 +37,7 @@ module Directory
       actor = @run.actor
       verify!(actor)
       reader = @reader || Integrations::Rock::PeopleReader.new(actor: actor,
-        campus_ids: @run.campus_ids)
+        import_run: @run)
       until @run.read_complete?
         @phase = "read"
         raise PageError, "page_limit_exceeded" if @run.page_count >= MAX_PAGES
@@ -151,16 +151,18 @@ module Directory
             issues: data["issues"] || [], policy_revision: @run.policy_revision,
             observed_at: entry.observed_at, source_created_at: data["source_created_at"],
             source_modified_at: data["source_modified_at"], in_population: true, left_scope_at: nil)
-          if actor.view_locations? && policy.selected_fields.include?("home_address")
+          if policy.selected_fields.include?("home_address")
             person.private_address = home.slice("street1", "street2", "postal_code",
               "latitude", "longitude")
-            person.private_observed_at = entry.observed_at
+            person.private_observed_at = if person.private_address.values.any?(&:present?)
+              entry.observed_at
+            end
           elsif old_location != person.location_id || old_policy != @run.policy_revision ||
               person.home_status != "known" || !policy.selected_fields.include?("home_address")
             person.private_address = {}
             person.private_observed_at = nil
           end
-          if actor.view_photos? && policy.selected_fields.include?("photo")
+          if policy.selected_fields.include?("photo")
             person.photo_id = data["photo_id"]
             person.photo_observed_at = entry.observed_at
           elsif old_policy != @run.policy_revision || !policy.selected_fields.include?("photo")
@@ -182,13 +184,8 @@ module Directory
     end
 
     def verify!(actor)
-      actor.reload
-      policy = DataPolicy.current
-      allowed = actor.active? && !actor.access_locked? &&
-        (@run.campus_ids - actor.campuses.active.pluck(:id)).empty?
-      valid_policy = policy.confirmed? && policy.valid? && policy.revision == @run.policy_revision
-      unless allowed && valid_policy
-        raise PersonRefreshRun::NotReady, "Access or data decisions changed"
+      unless actor.id == @run.actor_id && @run.checkpoint_authorized?
+        raise PersonRefreshRun::NotReady, "Administrator authorization, catalog, or data decisions changed"
       end
     end
   end

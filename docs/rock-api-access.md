@@ -44,6 +44,11 @@ Do not use person-creation, update, delete, or other write endpoints when inspec
 
 ## Authentication attempts and outcomes
 
+All-campus household reads must split long `Person/PrimaryCampusId` filters. The Chapel v1
+`GroupMembers` endpoint rejected the 12-campus predicate with HTTP 400 due to its OData node limit.
+The reader uses partitions of at most eight campuses and fully paginates each partition before
+combining the normalized roster. Person queries still use the complete campus scope.
+
 The Chapel v1 `GroupLocations` query returns HTTP 500 when projecting
 `Location/Latitude,Location/Longitude`. The same scoped page succeeds with street, postal code,
 town, and active-location fields. Home-address reads omit those coordinate projections so directory

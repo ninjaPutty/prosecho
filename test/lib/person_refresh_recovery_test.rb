@@ -6,7 +6,7 @@ class PersonRefreshRecoveryTest < ActiveSupport::TestCase
 
   setup do
     confirm_directory_policy
-    @run = PersonRefreshRun.start!(actor: users(:staff))
+    @run = PersonRefreshRun.start!(actor: users(:administrator))
     @adapter = PersonRefreshJob.queue_adapter
     PersonRefreshJob.queue_adapter = :solid_queue
   end
@@ -87,8 +87,34 @@ class PersonRefreshRecoveryTest < ActiveSupport::TestCase
 
   test "failed resume cannot overlap another user's active refresh" do
     @run.update!(status: "failed", error_code: "invalid_person_identity")
-    PersonRefreshRun.start!(actor: users(:staff))
+    PersonRefreshRun.start!(actor: users(:administrator))
     assert_raises(PersonRefreshRun::AlreadyRunning) { @run.resume! }
     assert_equal "failed", @run.reload.status
+  end
+
+  test "the scheduling entry point enqueues all-campus work and rejects staff" do
+    @run.update!(status: "succeeded")
+    run = nil
+    assert_difference "SolidQueue::Job.count", 1 do
+      run = PersonRefreshRun.enqueue!(actor: users(:administrator))
+    end
+    assert run.all_campuses?
+    assert_equal Campus.order(:id).pluck(:id), run.campus_ids
+    assert_no_difference "SolidQueue::Job.count" do
+      assert_equal run.id, PersonRefreshRun.enqueue!(actor: users(:administrator)).id
+      assert_raises(PersonRefreshRun::NotReady) do
+        PersonRefreshRun.enqueue!(actor: users(:staff))
+      end
+    end
+  end
+
+  test "campus grants do not affect global retry but legacy scoped runs cannot be widened on resume" do
+    @run.update!(status: "failed", error_code: "invalid_person_identity")
+    users(:administrator).campuses << campuses(:north)
+    users(:administrator).campus_accesses.destroy_all
+    assert @run.resumable?
+    @run.update!(all_campuses: false)
+    assert_not @run.resumable?
+    assert_raises(PersonRefreshRun::NotReady) { @run.resume! }
   end
 end

@@ -1,19 +1,20 @@
 module Workspace
-  class RefreshesController < BaseController
+  class RefreshesController < StaffController
+    before_action :require_refresh_administrator
+
     def create
-      selected = session.dig(:people_filters, "campus_id")
-      run = if params[:resume_run_id].present?
-        PersonRefreshRun.where(actor: current_user).find(params[:resume_run_id]).resume!
+      if params[:resume_run_id].present?
+        saved = PersonRefreshRun.where(actor: current_user).find(params[:resume_run_id]).resume!
+        saved.dispatch!
       else
-        PersonRefreshRun.active.find_by(actor: current_user) || PersonRefreshRun.start!(actor: current_user,
-          campus_ids: selected.present? ? [selected] : nil)
+        PersonRefreshRun.enqueue!(actor: current_user)
       end
-      dispatched = run.dispatch!
-      message = dispatched ? "Refresh queued from its saved checkpoint." : "Refresh is already scheduled or processing."
-      redirect_to dashboard_path, notice: "#{message} Your current directory stays available.",
+      redirect_to refresh_return_path,
+        notice: "All-campus refresh queued or processing from its saved checkpoint. " \
+          "Your current directory stays available.",
         status: :see_other
     rescue PersonRefreshRun::NotReady, PersonRefreshRun::AlreadyRunning => error
-      redirect_to dashboard_path, alert: error.message, status: :see_other
+      redirect_to refresh_return_path, alert: error.message, status: :see_other
     end
 
     def show
@@ -25,6 +26,19 @@ module Workspace
         error_message: run&.error_message, resumable: run&.resumable?,
         worker_online: Directory::WorkerHealth.online?
       }
+    end
+
+    private
+
+    def refresh_return_path
+      current_user.campuses.active.exists? ? dashboard_path : admin_root_path
+    end
+
+    def require_refresh_administrator
+      allowed = current_user.administrator?
+      AccessEvent.create!(actor: current_user, resource: "administration",
+        outcome: allowed ? "allowed" : "denied")
+      head :forbidden unless allowed
     end
   end
 end

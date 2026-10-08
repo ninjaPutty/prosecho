@@ -77,18 +77,22 @@ class PastoralWorkspaceTest < ActionDispatch::IntegrationTest
   end
 
   test "refresh is a deliberate authenticated POST that enqueues durable work" do
+    sign_in_refresh_administrator
+    post workspace_filters_path, params: {filters: {campus_id: campuses(:north).id}}
     assert_enqueued_with(job: PersonRefreshJob) do
       post workspace_refresh_path
     end
     assert_redirected_to dashboard_path
     run = PersonRefreshRun.order(:created_at).last
-    assert_equal users(:staff).id, run.actor_id
-    assert_equal [campuses(:north).id], run.campus_ids
+    assert_equal users(:administrator).id, run.actor_id
+    assert_equal Campus.order(:id).pluck(:id), run.campus_ids
+    assert run.all_campuses?
     assert_equal @policy.revision, run.policy_revision
   end
 
   test "clicking refresh resumes an orphaned run instead of creating a second run" do
-    run = PersonRefreshRun.start!(actor: users(:staff))
+    sign_in_refresh_administrator
+    run = PersonRefreshRun.start!(actor: users(:administrator))
     run.update!(status: "running", page_count: 2, next_offset: 100)
     assert_no_difference "PersonRefreshRun.count" do
       assert_enqueued_with(job: PersonRefreshJob, args: [run.id]) do
@@ -108,6 +112,7 @@ class PastoralWorkspaceTest < ActionDispatch::IntegrationTest
   end
 
   test "a refresh POST actually executes the reader and publishes when the worker performs it" do
+    sign_in_refresh_administrator
     batch = Integrations::Rock::PeopleReader::Page.new(people: [], offset: 0,
       limit: 50, next_offset: nil, policy_revision: @policy.revision, observed_at: Time.current)
     reader = Object.new
@@ -122,7 +127,8 @@ class PastoralWorkspaceTest < ActionDispatch::IntegrationTest
   end
 
   test "failed refresh shows actionable safe diagnostics and explicitly resumes the same checkpoint" do
-    run = PersonRefreshRun.start!(actor: users(:staff))
+    sign_in_refresh_administrator
+    run = PersonRefreshRun.start!(actor: users(:administrator))
     run.update!(status: "failed", page_count: 2, next_offset: 100, last_rock_id: 500,
       error_code: "invalid_person_identity",
       error_details: {"phase" => "read", "page" => 3, "rock_id" => 501, "fields" => ["Guid"]})
@@ -147,16 +153,18 @@ class PastoralWorkspaceTest < ActionDispatch::IntegrationTest
   end
 
   test "resume POST cannot target another actor or bypass a changed policy" do
-    run = PersonRefreshRun.start!(actor: users(:staff))
+    sign_in_refresh_administrator
+    run = PersonRefreshRun.start!(actor: users(:administrator))
     run.update!(status: "failed", error_code: "invalid_person_identity",
       error_details: {"rock_id" => 501, "last_rock_id" => 500, "phase" => "read"})
-    sign_in users(:administrator)
-    users(:administrator).campuses << campuses(:north)
+    other = User.create!(email: "other-admin@example.test", password: "fixture long passphrase",
+      role: "administrator")
+    sign_in other
     assert_no_enqueued_jobs do
       post workspace_refresh_path, params: {resume_run_id: run.id}
     end
     assert_response :not_found
-    sign_in users(:staff)
+    sign_in users(:administrator)
     @policy.update!(history_retention_days: 180)
     assert_no_enqueued_jobs do
       post workspace_refresh_path, params: {resume_run_id: run.id}
@@ -196,5 +204,40 @@ class PastoralWorkspaceTest < ActionDispatch::IntegrationTest
     post workspace_filters_path, params: {filters: {campus_id: campuses(:south).id}}
     assert_response :unprocessable_content
     assert_not response.body.include?("Outside Example")
+  end
+
+  test "staff cannot see the refresh control or start or monitor an administrative refresh" do
+    get dashboard_path
+    assert_response :success
+    assert_select "form[action='#{workspace_refresh_path}']", count: 0
+    assert_no_difference "PersonRefreshRun.count" do
+      assert_no_enqueued_jobs { post workspace_refresh_path }
+    end
+    assert_response :forbidden
+    get workspace_refresh_status_path
+    assert_response :forbidden
+  end
+
+  test "administrator without viewing grants can refresh all campuses from administration" do
+    sign_in users(:administrator)
+    assert_empty users(:administrator).campuses
+    get admin_root_path
+    assert_response :success
+    assert_select "form[action='#{workspace_refresh_path}']"
+    assert_enqueued_with(job: PersonRefreshJob) { post workspace_refresh_path }
+    assert_redirected_to admin_root_path
+    run = PersonRefreshRun.order(:created_at).last
+    assert_equal Campus.order(:id).pluck(:id), run.campus_ids
+    get dashboard_path
+    assert_response :forbidden
+    get workspace_refresh_status_path
+    assert_response :success
+  end
+
+  private
+
+  def sign_in_refresh_administrator
+    users(:administrator).campuses << campuses(:north)
+    sign_in users(:administrator)
   end
 end

@@ -6,7 +6,8 @@ module Admin
       page = params.fetch(:page, "1").to_i.clamp(1, 10000)
       accounts = User.order(:email).includes(:campuses).limit(30).offset((page - 1) * 30)
       render Components::Admin::Dashboard.new(accounts: accounts,
-        campuses: Campus.includes(:parent).order(:name), page: page)
+        campuses: Campus.includes(:parent).order(:name), page: page, policy: DataPolicy.current,
+        refresh_run: PersonRefreshRun.where(actor: current_user).order(created_at: :desc).first)
     end
 
     private

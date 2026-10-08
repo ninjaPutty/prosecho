@@ -9,6 +9,12 @@ class WorkspacePreview < Lookbook::Preview
     end
   end
 
+  class PreviewAdministrator < PreviewActor
+    def administrator?
+      true
+    end
+  end
+
   def changes_setup
     render Components::Workspace::Pending.new(view: :changes)
   end
@@ -23,7 +29,7 @@ class WorkspacePreview < Lookbook::Preview
       error_details: {"phase" => "read", "page" => 5, "rock_id" => 501, "fields" => ["Guid"]})
     run.define_singleton_method(:checkpoint_authorized?) { true }
     run.define_singleton_method(:entries) { [] }
-    render Components::Workspace::People.new(query: sample_query([]), actor: PreviewActor.new, run: run)
+    render Components::Workspace::People.new(query: sample_query([]), actor: PreviewAdministrator.new, run: run)
   end
 
   def map_setup

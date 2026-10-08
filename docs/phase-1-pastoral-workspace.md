@@ -16,9 +16,22 @@ map services and scheduled comparisons are later phases.
 
 ## Refresh and publication
 
-Refresh people from Rock is a deliberate CSRF-protected POST. It creates a durable run and queues
-PersonRefreshJob in the directory queue. The selected campus filter restricts the refresh; otherwise
-the actor's active granted campuses are used. Administrator status does not bypass campus scope.
+Refresh people from Rock is an administrator-only, CSRF-protected POST, available on `/admin` and
+the administrator's pastoral workspace. Staff cannot start, resume, or inspect administrative refresh
+jobs. Administrators without campus viewing grants can operate the import from `/admin`.
+
+Every new refresh captures **all campuses in the local Rock catalog**, including inactive campuses.
+The selected directory filter and the initiating administrator's viewing grants never narrow the
+import. Fetch the campus catalog through administration first, and refresh it when Rock adds campuses.
+The import reads the fields approved by the saved data policy, independently of the operator's
+photo/location viewing flags. Directory, detail, household, and photo access still require each
+viewer's current active campus grants and sensitive-data permissions; import authority grants no
+additional pastoral viewing access.
+
+`PersonRefreshRun.enqueue!(actor: administrator)` is the shared entry point used by the button and
+available for a future scheduler. It creates or reconnects an all-campus run and queues
+PersonRefreshJob in the directory queue. The administrator must remain active, unlocked, and an
+administrator throughout reading, retry, and publication. No recurring full refresh is enabled yet.
 
 Person downloads default to 250 source rows per page. Set the server's process-only
 `ROCK_PERSON_PAGE_SIZE=500` to use larger pages; supported sizes are 1–500. Address and household
@@ -38,8 +51,8 @@ Legacy interrupted scans retain their saved offset for the first resumed page, t
 cursor. This is an eventually consistent read, not an atomic snapshot of Rock; records changing
 campus or fields behind the cursor are picked up by a later full refresh.
 
-Sleep, worker exit, and transient Rock/DNS errors
-preserve those checkpoints. Recovery resumes at the saved cursor, re-reading only an interrupted
+Sleep, worker exit, and transient Rock/DNS errors preserve those checkpoints. Recovery resumes at
+the saved cursor, re-reading only an interrupted
 page. A saved final-page marker allows interrupted publication to retry without reading Rock again.
 
 The recovery job checks active runs every minute and replaces missing, failed, or stale-worker jobs.
@@ -56,10 +69,14 @@ errors show the upstream status separately from network failures. Diagnostics co
 addresses, credentials, upstream bodies, or exception messages.
 
 Failed runs wait for an explicit **Retry from saved checkpoint**. Retry rechecks the original actor,
-campus scope, and exact policy revision and cannot overlap another active run. A completed read
-retries publication without downloading again. The last diagnostic context survives a retry for
+administrator authorization, captured catalog scope, and exact policy revision and cannot overlap
+another active run. A completed read retries publication without downloading again. The last
+diagnostic context survives a retry for
 investigation. Legacy failures whose staging was already deleted need a new refresh; their old page
 count is not a usable checkpoint.
+
+Earlier campus-restricted runs are not converted into all-campus runs on retry. They need a new
+global refresh so incomplete coverage cannot be mistaken for an all-campus scan.
 
 Policy/access failures invalidate staging and prevent retry; successful publication clears staging
 atomically. No failed or incomplete run publishes partial profiles or infers absent people. Raw API
@@ -117,6 +134,13 @@ and the directory queue enabled, following the documented deployment workflow.
   successive ID-cursor pages advanced without overlap. The failed-run preview and `/ready` returned
   HTTP 200. Browser visual/interaction review of the new retry state remains unverified.
 - Standard Ruby, Tailwind, Solid Queue configuration, and eager loading passed.
+- Missing-name publication regression checks: 146 tests, 979 assertions, no failures/errors.
+  A completed local checkpoint published all 40,041 profiles on retry without another Rock download.
+- Administrator-only global import checks: 156 tests, 1,044 assertions, no failures/errors. Live
+  rollback-only verification used all 12 catalog campuses despite two operator grants and read the
+  requested McHenry person without persisting an import. Household filters were verified with
+  separately paginated eight-campus partitions. Admin/staff preview controls and worker readiness
+  passed; existing published profiles were preserved.
 - Tests cover visibility, session filters, combined queries, details/Turbo frames, portraits,
   policy/access changes, GUID upserts, failed pages, staging cleanup, address invalidation, and
   overlap guards, worker heartbeat/queue health, development-only managed workers, atomic checkpoints,

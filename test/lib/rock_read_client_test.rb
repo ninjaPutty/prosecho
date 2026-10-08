@@ -196,4 +196,11 @@ class RockReadClientTest < ActiveSupport::TestCase
     assert_raises(ArgumentError) { reader.home_locations(301, limit: 250) }
     assert_raises(ArgumentError) { reader.household_members(301, limit: 250) }
   end
+
+  test "household campus filters stay below the Rock OData expression-node limit" do
+    reader = client(transport: ->(_) { flunk "must not send an oversized campus filter" })
+    assert_raises(ArgumentError) do
+      reader.household_members(301, campus_ids: (100001..100009).to_a)
+    end
+  end
 end

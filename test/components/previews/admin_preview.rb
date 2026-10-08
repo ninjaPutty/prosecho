@@ -1,4 +1,9 @@
 class AdminPreview < Lookbook::Preview
+  def all_campus_refresh
+    policy = DataPolicy.new(DataPolicy.default_attributes.merge(status: "confirmed"))
+    render Components::Admin::Dashboard.new(accounts: [], campuses: [], policy: policy)
+  end
+
   def data_decisions
     render Components::Admin::DataPolicyForm.new(policy: DataPolicy.new(DataPolicy.default_attributes))
   end

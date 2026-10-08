@@ -10,11 +10,23 @@ immutable page of `PersonRecord` values, the possible next offset, policy revisi
 time. Pages are bounded to 1–500 people. Related address/member lists are bounded and paginated
 separately.
 
-The actor must be active, unlocked, and have explicit active campus grants. Administrator status
-alone grants no person access. The saved Data decisions must be confirmed and valid before any
+Household campus filters are partitioned into groups of at most eight campuses to stay below Rock's
+OData expression-node limit. Each partition is paginated independently before member identities are
+combined, so expanding the import to all campuses does not truncate large household rosters.
+
+For ordinary scoped reads, the actor must be active, unlocked, and have explicit active campus grants.
+Administrator status alone grants no person access. The saved Data decisions must be confirmed and
+valid before any
 request. The actor, scope, sensitive permissions, and policy revision are checked again around
 related requests and before returning a result. Revoked access or changed decisions discard the
 page. Access is audited using actor/resource metadata without person payloads.
+
+The administrative import supplies a persisted all-campus refresh run to the reader. That mode
+requires the run's active administrator and confirmed policy, uses the captured campus catalog
+(including inactive campuses), and reads all policy-approved fields regardless of the operator's
+viewing grants or photo/location flags. Ordinary readers remain campus/permission scoped. Import
+authorization is rechecked between requests and before publication; an administrator role alone
+never expands the ordinary directory/detail/photo endpoints.
 
 ## Read contract
 
@@ -46,6 +58,12 @@ preferred display name, complete birth date and calculated age, safe lookup valu
 reference, address/household values, approved attributes, and issue codes. It does not trust Rock's
 precomputed age. Partial, impossible, or future birth dates produce unknown age rather than a
 guessed value. Missing/mismatched lookup labels remain unknown.
+
+A valid person identity with no usable first name, last name, or approved nickname displays as
+`Unnamed person (Rock #<id>)` and carries the `person_name_missing` issue. Missing source names do
+not invalidate the person or block an entire publication. The projection also supplies this fallback
+when publishing older retained checkpoints with blank names. Actual source-name fields remain
+unknown, and a later refresh with a known name replaces the label and clears the issue.
 
 Only active Home-type locations are eligible. Previous/mailing/mapped flags cannot substitute for a
 Home location. Repeated references to the same location are deduplicated; multiple distinct Home

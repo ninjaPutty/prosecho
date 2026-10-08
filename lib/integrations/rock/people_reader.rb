@@ -15,10 +15,11 @@ module Integrations
       end
       MAX_RELATED_PAGES = 10
 
-      def initialize(actor:, client: nil, campus_ids: nil)
+      def initialize(actor:, client: nil, campus_ids: nil, import_run: nil)
         @actor = actor
         @client = client
         @requested_campus_ids = campus_ids
+        @import_run = import_run
       end
 
       def read_page(limit: 25, offset: 0, after_id: nil)
@@ -30,8 +31,8 @@ module Integrations
         policy = confirmed_policy
         revision = policy.revision
         fields = policy.selected_fields.dup
-        fields.delete("photo") unless @actor.view_photos?
-        precise = @actor.view_locations?
+        fields.delete("photo") unless @import_run || @actor.view_photos?
+        precise = @import_run ? true : @actor.view_locations?
         client = @client || ReadClient.new
         options = {campus_ids: scope.keys, fields: fields,
                    attribute_keys: policy.attribute_keys, limit: limit,
@@ -65,10 +66,15 @@ module Integrations
             []
           end
           members = if family && fields.include?("household")
-            households[family] ||= related_pages do |page_offset|
-              verify_snapshot!(scope: scope, fields: fields, precise: precise, revision: revision)
-              client.household_members(family, limit: 100,
-                offset: page_offset, campus_ids: scope.keys)
+            # Rock's OData node limit rejects a long Person/PrimaryCampusId OR
+            # filter. Paginate each campus partition fully before combining it.
+            households[family] ||= scope.keys.each_slice(ReadClient::MAX_HOUSEHOLD_CAMPUS_SCOPE)
+              .flat_map do |campus_ids|
+              related_pages do |page_offset|
+                verify_snapshot!(scope: scope, fields: fields, precise: precise, revision: revision)
+                client.household_members(family, limit: 100,
+                  offset: page_offset, campus_ids: campus_ids)
+              end
             end
           else
             []
@@ -94,6 +100,18 @@ module Integrations
       def authorized_campuses
         unless @actor&.reload&.active? && !@actor.access_locked?
           raise NotAuthorized, "An active account is required"
+        end
+        if @import_run
+          unless @import_run.persisted? && @import_run.actor_id == @actor.id &&
+              @import_run.reload.active? && @import_run.checkpoint_authorized?
+            raise NotAuthorized, "An authorized all-campus import run is required"
+          end
+          # Global ingestion uses the catalog, not the operator's viewing grants.
+          # The captured run scope includes inactive campuses; viewers still use
+          # current active campus grants at every directory endpoint.
+          return Campus.where(id: @import_run.campus_ids).to_h do |campus|
+            [campus.rock_id, {id: campus.id, name: campus.name}]
+          end
         end
         campuses = @actor.campuses.active.to_a
         if @requested_campus_ids
@@ -136,8 +154,10 @@ module Integrations
       def verify_snapshot!(scope:, fields:, precise:, revision:)
         current_scope = authorized_campuses
         allowed = (scope.keys - current_scope.keys).empty?
-        allowed &&= @actor.view_locations? if precise
-        allowed &&= @actor.view_photos? if fields.include?("photo")
+        unless @import_run
+          allowed &&= @actor.view_locations? if precise
+          allowed &&= @actor.view_photos? if fields.include?("photo")
+        end
         raise NotAuthorized, "Access changed during the read" unless allowed
         unless confirmed_policy.revision == revision
           raise PolicyNotReady, "Data decisions changed during the read"

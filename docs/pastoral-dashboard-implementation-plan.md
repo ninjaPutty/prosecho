@@ -40,8 +40,9 @@ hosting. See [Phase 0 foundations](phase-0-foundations.md) for verification and 
 
 ## Phase 1 — Read-only people directory
 
-**Projection/workspace status:** local profiles, a durable scoped refresh, session-backed filters,
-portrait proxy, and people/detail views are implemented. See
+**Projection/workspace status:** local profiles, an administrator-only all-campus refresh,
+session-backed filters, portrait proxy, and people/detail views are implemented. Viewing remains
+campus-scoped. See
 [pastoral workspace](phase-1-pastoral-workspace.md). Map and Changes currently show the real setup
 state for their later-phase services/events.
 
@@ -63,6 +64,13 @@ persistence and the filtered directory consume this pipeline in the workspace de
 **Acceptance:** authorized staff can filter and view the intended local projection; an anonymous
 request is denied; no browser request contains the Rock credential; adapter tests prove read-only
 behavior.
+
+**Remaining Phase 1 verification:** complete and publish one all-campus import (the successful live
+imports so far were campus-restricted), then walk through combined filters, profiles, portrait
+fallbacks, and current campus/permission boundaries in the browser. Review desktop/mobile layouts,
+keyboard interaction, and empty/stale/error states. Automated regressions cover these contracts;
+live preview HTTP checks do not establish browser acceptance. Durable runtime-key provisioning and
+production rollout remain operational follow-ups.
 
 ## Phase 2 — Scheduled sync and pastoral changes
 

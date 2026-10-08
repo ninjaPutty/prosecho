@@ -17,6 +17,12 @@ unlocked administrators. Setup stays closed, including stale submissions. CSRF-p
 manage roles, permissions, campus grants, and local campus organization. Parent campuses do not
 confer inherited access, and the last active administrator cannot be removed.
 
+Person refresh controls and their start/resume/status endpoints require an active administrator.
+Imports cover the complete campus catalog, including inactive campuses, and use the agreed data
+allowlist rather than the initiating administrator's viewing grants. This is import authority only:
+pastoral lists, details, portraits, and precise addresses still enforce each viewer's current campus
+and sensitive-data permissions. Revoked administrator status or changed policy blocks the import.
+
 Campus fetching is an explicit, CSRF-protected administrator action. Upstream requests are GET-only;
 only local campus projections change. New campuses have no account grants. The full catalog is
 validated before an atomic import, and refreshes preserve existing grants and local parent

@@ -1,5 +1,6 @@
 class PersonProfile < ApplicationRecord
   belongs_to :campus
+  before_validation :supply_missing_name
   validates :display_name, :observed_at, :policy_revision, :rock_guid, presence: true
   validates :rock_id, numericality: {only_integer: true, greater_than: 0}
   validates :rock_guid, uniqueness: {scope: :source_system}
@@ -20,5 +21,16 @@ class PersonProfile < ApplicationRecord
 
   def initials
     [first_name, last_name].filter_map { |value| value&.first }.join.upcase.presence || "?"
+  end
+
+  private
+
+  def supply_missing_name
+    return unless display_name.blank? && [first_name, last_name, nick_name].all?(&:blank?)
+
+    # Retained checkpoints may predate the mapper's nameless-person fallback.
+    # Repair only genuinely missing names; other invalid profiles must still fail.
+    self.display_name = Integrations::Rock::PersonRecord.unknown_name(rock_id)
+    self.issues = (Array(issues) + ["person_name_missing"]).uniq
   end
 end

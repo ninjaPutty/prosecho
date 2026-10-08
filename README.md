@@ -13,6 +13,11 @@ uses the read-only adapter and preserves local staff grants. The local server's 
 integration holds a process-only runtime Rock key; normal container credential mounts and
 configuration are unchanged.
 
+Only administrators can **Refresh people from Rock**, from `/admin` or their pastoral workspace.
+It imports every campus in the catalog, regardless of directory filters or the administrator's
+viewing grants. Staff viewing access remains campus-scoped. The same all-campus entry point is
+available for future scheduled refreshes.
+
 Use **Data decisions** on `/admin` (or `/admin/data_policy`) to save retention periods,
 source/interpretation rules, the initial field allowlist, and custom attribute keys. Drafts can be
 saved before recording complete agreed decisions. These are persisted settings; no YAML editing is

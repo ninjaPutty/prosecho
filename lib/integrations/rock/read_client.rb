@@ -7,6 +7,7 @@ module Integrations
     class ReadClient
       BASE_URL = "https://rock.chapel.org"
       MAX_PEOPLE_PAGE_SIZE = 500
+      MAX_HOUSEHOLD_CAMPUS_SCOPE = 8
       class ConfigurationError < StandardError; end
 
       class ReadError < StandardError
@@ -65,7 +66,8 @@ module Integrations
         parameters = {"$filter" => filter, "$orderby" => "Id", "$expand" => "GroupRole",
                       "$top" => page_limit(limit), "$skip" => page_offset(offset)}
         if campus_ids
-          parameters["$filter"] += " and #{campus_filter(campus_ids, prefix: "Person/")}"
+          parameters["$filter"] += " and #{campus_filter(campus_ids, prefix: "Person/",
+            maximum: MAX_HOUSEHOLD_CAMPUS_SCOPE)}"
           parameters["$expand"] = "GroupRole,Person"
           parameters["$select"] = %w[Id PersonId GroupRoleId GroupMemberStatus IsArchived
             GroupRole/Id GroupRole/Name Person/Id Person/Guid Person/PrimaryCampusId].join(",")
@@ -147,9 +149,9 @@ module Integrations
 
       private
 
-      def campus_filter(ids, prefix: "")
-        unless ids.is_a?(Array) && ids.any? && ids.size <= 100
-          raise ArgumentError, "Explicit campus scope of 1-100 campuses is required"
+      def campus_filter(ids, prefix: "", maximum: 100)
+        unless ids.is_a?(Array) && ids.any? && ids.size <= maximum
+          raise ArgumentError, "Explicit campus scope of 1-#{maximum} campuses is required"
         end
         values = ids.map { |id| identifier(id) }.uniq.sort
         "(#{values.map { |id| "#{prefix}PrimaryCampusId eq #{id}" }.join(" or ")})"

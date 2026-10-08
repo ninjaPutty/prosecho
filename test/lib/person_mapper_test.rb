@@ -36,6 +36,18 @@ class PersonMapperTest < ActiveSupport::TestCase
     assert result.home_address.frozen?
   end
 
+  test "valid people with no source names get an explicit unknown label and issue" do
+    row = person.merge("FirstName" => " ", "LastName" => nil, "NickName" => "")
+    result = mapper.map(row)
+    assert_equal "Unnamed person (Rock #101)", result.display_name
+    assert_equal({first_name: nil, last_name: nil, nick_name: nil}, result.names)
+    assert_includes result.issues, "person_name_missing"
+    assert result.display_name.frozen?
+    corrected = mapper.map(row.merge("FirstName" => "Known"))
+    assert_equal "Known", corrected.display_name
+    assert_not_includes corrected.issues, "person_name_missing"
+  end
+
   test "missing or ambiguous homes never use previous mailing or mapped locations" do
     previous = home(kind: "Previous").merge("IsMappedLocation" => true, "IsMailingLocation" => true)
     missing = mapper.map(person, locations: [previous])
