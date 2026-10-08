@@ -1,0 +1,46 @@
+alex:
+  campus_id: a63191d6-f854-419c-906c-33c86598d452
+  source_system: rock.chapel.org
+  rock_id: 101
+  rock_guid: 00000000-0000-4000-8000-000000000101
+  first_name: Alex
+  last_name: Example
+  display_name: Alex Example
+  birth_date: 1990-05-10
+  connection_status_id: 201
+  connection_status_label: Example connection
+  city: Example Town
+  state: ZZ
+  country: US
+  home_status: known
+  location_id: 501
+  private_address: {street1: "10 Fixture Lane", postal_code: "00000", latitude: 42.0, longitude: -88.0}
+  photo_id: 42
+  policy_revision: synthetic-policy-revision
+  observed_at: <%= Time.current.iso8601 %>
+
+casey:
+  campus_id: a63191d6-f854-419c-906c-33c86598d452
+  source_system: rock.chapel.org
+  rock_id: 102
+  rock_guid: 00000000-0000-4000-8000-000000000102
+  first_name: Casey
+  last_name: Example
+  display_name: Casey Example
+  birth_date: 2015-01-01
+  city: Another Example Town
+  home_status: ambiguous
+  policy_revision: synthetic-policy-revision
+  observed_at: <%= Time.current.iso8601 %>
+
+outside:
+  campus_id: 6575dc8f-cc5e-41f7-8c40-f610fbc41a33
+  source_system: rock.chapel.org
+  rock_id: 103
+  rock_guid: 00000000-0000-4000-8000-000000000103
+  first_name: Outside
+  last_name: Example
+  display_name: Outside Example
+  home_status: missing
+  policy_revision: synthetic-policy-revision
+  observed_at: <%= Time.current.iso8601 %>

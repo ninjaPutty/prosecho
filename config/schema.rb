@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_05_000001) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_08_000001) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -69,7 +69,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_05_000001) do
     t.index ["recorded_by_id"], name: "index_data_policies_on_recorded_by_id"
     t.index ["slot"], name: "index_data_policies_on_slot", unique: true
     t.check_constraint "slot = 1", name: "data_policies_singleton"
-    t.check_constraint "status::text = ANY (ARRAY['draft'::character varying, 'confirmed'::character varying]::text[])", name: "data_policies_status"
+    t.check_constraint "status::text = ANY (ARRAY['draft'::character varying::text, 'confirmed'::character varying::text])", name: "data_policies_status"
   end
 
   create_table "foundation_checks", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
@@ -77,6 +77,84 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_05_000001) do
     t.datetime "created_at", null: false
     t.boolean "ready", default: false, null: false
     t.datetime "updated_at", null: false
+  end
+
+  create_table "person_profiles", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.date "birth_date"
+    t.uuid "campus_id", null: false
+    t.string "city"
+    t.integer "connection_status_id"
+    t.string "connection_status_label"
+    t.string "country"
+    t.datetime "created_at", null: false
+    t.jsonb "custom_attributes", default: {}, null: false
+    t.string "display_name", null: false
+    t.string "first_name"
+    t.string "home_status", default: "missing", null: false
+    t.jsonb "household", default: {}, null: false
+    t.boolean "in_population", default: true, null: false
+    t.jsonb "issues", default: [], null: false
+    t.string "last_name"
+    t.datetime "left_scope_at"
+    t.integer "location_id"
+    t.integer "marital_status_id"
+    t.string "marital_status_label"
+    t.string "nick_name"
+    t.datetime "observed_at", null: false
+    t.integer "photo_id"
+    t.datetime "photo_observed_at"
+    t.string "policy_revision", null: false
+    t.jsonb "private_address", default: {}, null: false
+    t.datetime "private_observed_at"
+    t.uuid "rock_guid", null: false
+    t.integer "rock_id", null: false
+    t.string "source_created_at"
+    t.string "source_modified_at"
+    t.string "source_system", default: "rock.chapel.org", null: false
+    t.string "state"
+    t.datetime "updated_at", null: false
+    t.index ["campus_id", "policy_revision", "in_population"], name: "index_person_profiles_for_directory"
+    t.index ["campus_id"], name: "index_person_profiles_on_campus_id"
+    t.index ["city"], name: "index_person_profiles_on_city"
+    t.index ["connection_status_id"], name: "index_person_profiles_on_connection_status_id"
+    t.index ["source_system", "rock_guid"], name: "index_person_profiles_on_source_system_and_rock_guid", unique: true
+  end
+
+  create_table "person_refresh_entries", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.datetime "observed_at", null: false
+    t.jsonb "payload", null: false
+    t.uuid "rock_guid", null: false
+    t.uuid "run_id", null: false
+    t.datetime "updated_at", null: false
+    t.index ["run_id", "rock_guid"], name: "index_person_refresh_entries_on_run_id_and_rock_guid", unique: true
+    t.index ["run_id"], name: "index_person_refresh_entries_on_run_id"
+  end
+
+  create_table "person_refresh_runs", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.uuid "actor_id", null: false
+    t.string "campus_ids", default: [], null: false, array: true
+    t.boolean "checkpoint_retained", default: false, null: false
+    t.datetime "created_at", null: false
+    t.integer "duplicate_count", default: 0, null: false
+    t.string "error_code"
+    t.jsonb "error_details", default: {}, null: false
+    t.datetime "finished_at"
+    t.integer "imported_count", default: 0, null: false
+    t.string "job_id"
+    t.datetime "last_progress_at"
+    t.integer "last_rock_id"
+    t.integer "next_offset", default: 0, null: false
+    t.integer "page_count", default: 0, null: false
+    t.string "policy_revision", null: false
+    t.boolean "read_complete", default: false, null: false
+    t.datetime "retry_at"
+    t.integer "singleton_slot", default: 1, null: false
+    t.datetime "started_at"
+    t.string "status", default: "queued", null: false
+    t.datetime "updated_at", null: false
+    t.index ["actor_id"], name: "index_person_refresh_runs_on_actor_id"
+    t.index ["singleton_slot"], name: "index_person_refresh_runs_one_active", unique: true, where: "((status)::text = ANY (ARRAY[('queued'::character varying)::text, ('running'::character varying)::text]))"
   end
 
   create_table "solid_queue_batch_executions", force: :cascade do |t|
@@ -251,6 +329,9 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_05_000001) do
   add_foreign_key "campuses", "campuses", column: "parent_id"
   add_foreign_key "data_policies", "users", column: "confirmed_by_id"
   add_foreign_key "data_policies", "users", column: "recorded_by_id"
+  add_foreign_key "person_profiles", "campuses"
+  add_foreign_key "person_refresh_entries", "person_refresh_runs", column: "run_id", on_delete: :cascade
+  add_foreign_key "person_refresh_runs", "users", column: "actor_id"
   add_foreign_key "solid_queue_batch_executions", "solid_queue_batches", column: "batch_id", on_delete: :cascade
   add_foreign_key "solid_queue_batch_executions", "solid_queue_jobs", column: "job_id", on_delete: :cascade
   add_foreign_key "solid_queue_blocked_executions", "solid_queue_jobs", column: "job_id", on_delete: :cascade

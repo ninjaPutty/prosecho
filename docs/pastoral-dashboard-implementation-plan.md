@@ -40,6 +40,15 @@ hosting. See [Phase 0 foundations](phase-0-foundations.md) for verification and 
 
 ## Phase 1 — Read-only people directory
 
+**Projection/workspace status:** local profiles, a durable scoped refresh, session-backed filters,
+portrait proxy, and people/detail views are implemented. See
+[pastoral workspace](phase-1-pastoral-workspace.md). Map and Changes currently show the real setup
+state for their later-phase services/events.
+
+**First-step status:** the scoped, policy-gated paginated reads and normalized person mapper are
+implemented and verified. See [person-read pipeline](phase-1-person-pipeline.md). Local person
+persistence and the filtered directory consume this pipeline in the workspace described above.
+
 - Extend the Rock v1 GET-only client and add the normalized mapper. Use the verified
   `Authorization-Token` header and keep Rock JSON out of views.
 - Resolve a structured primary home address and family-member relationships; do not parse formatted

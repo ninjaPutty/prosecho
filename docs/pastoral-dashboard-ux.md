@@ -16,6 +16,11 @@ should feel personal and people-oriented, not like an administrative reporting s
 
 ## Dashboard layout
 
+The implemented People view has combined filters, portrait/initial rows, freshness and refresh-state
+summaries, and a person panel that keeps filters. Refresh people from Rock queues background work
+while the current directory stays visible. Map/Changes navigation explains pending setup rather than
+displaying invented points or events.
+
 On a desktop screen, the dashboard has a compact welcome/header area, a persistent filter rail, a
 large map, a recent-changes feed, and a people list or profile drawer. Users can move between these
 views without re-entering their filters.

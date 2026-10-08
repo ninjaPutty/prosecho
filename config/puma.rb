@@ -35,6 +35,10 @@ port ENV.fetch("PORT", 3000)
 plugin :tmp_restart
 plugin :tailwindcss if ENV.fetch("RAILS_ENV", "development") == "development"
 
+# Development workers follow the web server lifecycle and inherit its runtime
+# integration key. Production continues to use the separate job role.
+plugin :solid_queue if ENV.fetch("RAILS_ENV", "development") == "development"
+
 # Specify the PID file. Defaults to tmp/pids/server.pid in development.
 # In other environments, only set the PID file if requested.
 pidfile ENV["PIDFILE"] if ENV["PIDFILE"]

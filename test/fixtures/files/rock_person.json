@@ -1,0 +1,29 @@
+{
+  "Id": 101,
+  "Guid": "00000000-0000-4000-8000-000000000101",
+  "PrimaryCampusId": 100001,
+  "RecordTypeValueId": 1,
+  "IsDeceased": false,
+  "FirstName": "Taylor",
+  "NickName": "Tay",
+  "LastName": "Example",
+  "BirthDay": 10,
+  "BirthMonth": 5,
+  "BirthYear": 1990,
+  "Age": 999,
+  "PrimaryFamilyId": 301,
+  "PhotoId": 42,
+  "ConnectionStatusValueId": 201,
+  "ConnectionStatusValue": {"Id": 201, "Value": "Example connection"},
+  "MaritalStatusValueId": 202,
+  "MaritalStatusValue": {"Id": 202, "Value": "Example marital status"},
+  "CreatedDateTime": "2021-01-01T12:00:00",
+  "ModifiedDateTime": "2026-01-01T12:00:00",
+  "Email": "excluded@example.test",
+  "GivingId": "excluded-giving-reference",
+  "SystemNote": "excluded administrative note",
+  "AttributeValues": {
+    "FirstVisit": {"Value": "2021-01-01"},
+    "SensitiveExample": {"Value": "excluded custom value"}
+  }
+}

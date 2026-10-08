@@ -50,6 +50,11 @@ town, and active-location fields. Home-address reads omit those coordinate proje
 refreshes can complete; coordinates remain unset pending a verified map-phase read path. Do not
 exclude address rows merely because coordinates are unavailable.
 
+Rock v1 enum predicates need attention: `GroupMemberStatus eq 1` fails with incompatible
+`Edm.String`/`Edm.Int32` operand types, even though JSON returns active status as integer 1. The
+verified read query uses `GroupMemberStatus eq 'Active'`. See
+[Phase 1 pipeline](phase-1-person-pipeline.md) for the minimal scoped projections.
+
 Use `Authorization-Token` for the legacy v1 REST-key flow demonstrated in Rock's guide. These
 alternative forms did not yield a usable read in the checks documented here:
 

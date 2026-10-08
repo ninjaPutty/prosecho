@@ -5,5 +5,5 @@
 # See the ActiveSupport::ParameterFilter documentation for supported notations and behaviors.
 Rails.application.config.filter_parameters += [
   :passw, :email, :secret, :token, :_key, :crypt, :salt, :certificate, :otp, :ssn, :cvv, :cvc,
-  :address, :birth_date, :phone, :latitude, :longitude
+  :address, :birth_date, :phone, :latitude, :longitude, :filters, :search, :town
 ]

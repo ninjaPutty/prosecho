@@ -1,6 +1,16 @@
 Rails.application.routes.draw do
   devise_for :users, only: :sessions, controllers: {sessions: "users/sessions"}
   get "dashboard", to: "dashboard#show"
+  namespace :workspace do
+    resource :filters, only: %i[create destroy]
+    post "refresh", to: "refreshes#create"
+    get "refresh/status", to: "refreshes#show", as: :refresh_status
+    get "map", to: "views#map"
+    get "changes", to: "views#changes"
+    resources :people, only: :show do
+      get "photo", to: "photos#show"
+    end
+  end
   namespace :admin do
     root "dashboard#show"
     post "setup", to: "setup#create"

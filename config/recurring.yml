@@ -1,8 +1,14 @@
 development:
+  directory_recovery:
+    class: PersonRefreshRecoveryJob
+    schedule: every minute
   foundation_readiness:
     class: FoundationReadinessJob
     schedule: every 4 hours
 production:
+  directory_recovery:
+    class: PersonRefreshRecoveryJob
+    schedule: every minute
   foundation_readiness:
     class: FoundationReadinessJob
     schedule: every 4 hours

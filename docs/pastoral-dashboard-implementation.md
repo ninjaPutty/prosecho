@@ -20,6 +20,9 @@ Follow the shared Rails guidance and existing Prosecho conventions:
 
 ## Rock integration boundary
 
+The Phase 1 first-step pipeline is implemented in `PeopleReader`, `PersonFields`, and
+`PersonMapper`; see [the contract and verification](phase-1-person-pipeline.md).
+
 Keep Rock API details out of controllers, jobs, and views:
 
 - `Integrations::Rock::ReadClient` owns host validation, runtime authentication, timeouts, bounded
@@ -52,6 +55,10 @@ Treat a custom `FamilyStatus` attribute as separate from marital status and fami
 Chapel staff confirm its meaning and allowed values.
 
 ## Suggested local domain model
+
+The Phase 1 workspace uses PersonProfile, PersonRefreshRun, and temporary PersonRefreshEntry
+staging. Completed refreshes atomically publish by source/GUID. Views reapply current policy/scope
+and sensitive permissions. See [projection and workspace behavior](phase-1-pastoral-workspace.md).
 
 Phase 0 also persists a singleton, UUID-keyed `DataPolicy` record for admin retention/data-contract
 decisions. The form supports drafts and complete agreed decisions; actor/time attribution belongs to

@@ -3,7 +3,7 @@ default: &default
     - polling_interval: 1
       batch_size: 100
   workers:
-    - queues: [foundation, default]
+    - queues: [directory, foundation, default]
       threads: 2
       processes: 1
       polling_interval: 1
