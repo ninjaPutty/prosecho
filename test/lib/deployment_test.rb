@@ -89,6 +89,45 @@ class DeploymentTest < ActiveSupport::TestCase
     end
   end
 
+  test "deployment preflight needs no retired Cloudflare service token" do
+    runner = Object.new
+    runner.define_singleton_method(:run) do |*command, **_options|
+      case command
+      when %w[bundle exec kamal version] then "2.12.0"
+      when %w[docker --version] then "Docker version 28.5.2,"
+      when %w[docker buildx version] then "v0.29.1 "
+      when %w[cloudflared --version] then "2026.5.2 "
+      when %w[ssh-add -L] then "ssh-ed25519 fake-public-key\n"
+      end
+    end
+    candidate = ->(_source, _sha, &block) { block.call(runner) }
+    secrets = {"PGPASSWORD" => "fake-app-password"}
+    deployed = []
+    old_env = ENV.to_h.slice("APPROVED_MIGRATION_SHA", "DOCKER_HOST")
+    begin
+      ENV["APPROVED_MIGRATION_SHA"] = SHA
+      ENV["DOCKER_HOST"] = ProsechoDeploy::DOCKER_HOST
+      ProsechoDeploy.stub(:with_candidate, candidate) do
+        ProsechoDeploy.stub(:clean_sha!, nil) do
+          ProsechoDeploy.stub(:read_secrets, secrets) do
+            ProsechoDeploy.stub(:deploy, ->(*args) { deployed << args }) do
+              File.stub(:read, "ssh-ed25519 fake-public-key\n") do
+                File.stub(:stat, ->(path) { flunk "Unexpected credential stat: #{path}" }) do
+                  ProsechoDeploy.main(["migrate", SHA])
+                end
+              end
+            end
+          end
+        end
+      end
+      assert_equal [["migrate", SHA, runner, secrets]], deployed
+    ensure
+      %w[APPROVED_MIGRATION_SHA DOCKER_HOST].each do |key|
+        old_env.key?(key) ? ENV[key] = old_env[key] : ENV.delete(key)
+      end
+    end
+  end
+
   test "immutable registry gate rejects unknown tags and changed digests" do
     Dir.mktmpdir do |directory|
       curl = File.join(directory, "curl")

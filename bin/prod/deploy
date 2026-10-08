@@ -296,7 +296,6 @@ module ProsechoDeploy
       end
       identities = runner.run("ssh-add", "-L", capture: true, timeout: 30).lines.map { |line| line.split.first(2) }
       raise Failure, "Dedicated agent must contain only the pinned deployment key" unless identities == [File.read("/run/prosecho/deploy.pub").split.first(2)]
-      raise Failure, "Service token must be mode 600" unless File.stat("/run/prosecho/service-token.json").mode & 0o777 == 0o600
       deploy(mode, sha, runner, read_secrets("/run/prosecho/app.env"))
     end
   end
