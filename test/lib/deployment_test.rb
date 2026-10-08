@@ -114,7 +114,11 @@ class DeploymentTest < ActiveSupport::TestCase
             ProsechoDeploy.stub(:deploy, ->(*args) { deployed << args }) do
               File.stub(:read, "ssh-ed25519 fake-public-key\n") do
                 File.stub(:stat, ->(path) { flunk "Unexpected credential stat: #{path}" }) do
-                  ProsechoDeploy.main(["migrate", SHA])
+                  # The release suite itself runs in an isolated temporary clone;
+                  # model the user entrypoint's working directory separately.
+                  Dir.stub(:pwd, "/prosecho") do
+                    ProsechoDeploy.main(["migrate", SHA])
+                  end
                 end
               end
             end
