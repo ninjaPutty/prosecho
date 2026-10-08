@@ -23,7 +23,8 @@ class ProductionHelpersTest < Minitest::Test
       exit(query ? Integer(ENV.fetch("QUERY_STATUS", "0")) : 23)
     RUBY
     File.chmod(0o700, ssh)
-    @env = {"DOCKER_HOST" => nil, "PATH" => "#{@directory}:#{ENV.fetch("PATH")}",
+    @env = {"DOCKER_HOST" => nil, "SSH_AUTH_SOCK" => nil,
+            "PATH" => "#{@directory}:#{ENV.fetch("PATH")}",
             "CALL_LOG" => @log, "CONTAINERS" => ROW}
   end
 
@@ -47,11 +48,21 @@ class ProductionHelpersTest < Minitest::Test
 
   def test_deployment_container_keeps_its_dedicated_connection
     @env["DOCKER_HOST"] = "ssh://deploy@prosecho-deploy-cloudflare"
+    @env["SSH_AUTH_SOCK"] = "/run/prosecho/agent.sock"
     _out, error, status = invoke("runner", "puts 1")
     assert_equal 23, status.exitstatus, error
     assert_includes calls.last.fetch("args"), File.join(ROOT, ".devcontainer/ssh.deploy")
     assert_includes calls.last.fetch("args"), "prosecho-deploy-cloudflare"
     assert_includes calls.last.fetch("args"), "ConnectTimeout=10"
+  end
+
+  def test_ordinary_container_keeps_forwarded_agent_connection_with_remote_docker
+    @env["DOCKER_HOST"] = "ssh://deploy@prosecho-deploy-cloudflare"
+    @env["SSH_AUTH_SOCK"] = "/tmp/forwarded-agent.sock"
+    _out, error, status = invoke("runner", "puts 1")
+    assert_equal 23, status.exitstatus, error
+    assert_includes calls.last.fetch("args"), File.join(ROOT, ".devcontainer/ssh.prod")
+    assert_includes calls.last.fetch("args"), "ssh-prosecho.menloparking.com"
   end
 
   def test_cloudflare_developer_connection_needs_no_runtime_env_or_token

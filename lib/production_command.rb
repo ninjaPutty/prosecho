@@ -35,7 +35,8 @@ module ProductionCommand
       .find { |path| File.executable?(path) && File.expand_path(path) != "#{ROOT}/bin/prod/ssh" }
     abort "SSH client is missing" unless client
     ENV["PATH"] = "#{ROOT}/bin/prod:#{ENV.fetch("PATH")}"
-    deployment = ENV["DOCKER_HOST"] == "ssh://deploy@prosecho-deploy-cloudflare"
+    deployment = ENV["DOCKER_HOST"] == "ssh://deploy@prosecho-deploy-cloudflare" &&
+      ENV["SSH_AUTH_SOCK"] == "/run/prosecho/agent.sock"
     host = deployment ? "prosecho-deploy-cloudflare" : HOST
     config = deployment ? "ssh.deploy" : "ssh.prod"
     ssh = [client, "-F", "#{ROOT}/.devcontainer/#{config}", "-o", "ConnectTimeout=10"]

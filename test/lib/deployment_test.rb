@@ -89,7 +89,7 @@ class DeploymentTest < ActiveSupport::TestCase
     end
   end
 
-  test "deployment preflight needs no retired Cloudflare service token" do
+  test "deployment preflight uses the forwarded deployment key without retired credentials" do
     runner = Object.new
     runner.define_singleton_method(:run) do |*command, **_options|
       case command
@@ -97,7 +97,8 @@ class DeploymentTest < ActiveSupport::TestCase
       when %w[docker --version] then "Docker version 28.5.2,"
       when %w[docker buildx version] then "v0.29.1 "
       when %w[cloudflared --version] then "2026.5.2 "
-      when %w[ssh-add -L] then "ssh-ed25519 fake-public-key\n"
+      when %w[ssh-add -L]
+        "ssh-ed25519 unrelated-public-key\nssh-ed25519 fake-public-key\n"
       end
     end
     candidate = ->(_source, _sha, &block) { block.call(runner) }
@@ -149,6 +150,15 @@ class DeploymentTest < ActiveSupport::TestCase
     end
   end
 
+  test "deployment rejects an agent without the pinned production identity" do
+    runner = Object.new
+    runner.define_singleton_method(:run) { |*_args, **_options| "ssh-ed25519 unrelated-key\n" }
+    File.stub(:read, "ssh-ed25519 pinned-key\n") do
+      error = assert_raises(ProsechoDeploy::Failure) { ProsechoDeploy.verify_identity!(runner) }
+      assert_includes error.message, "pinned Prosecho deployment key"
+    end
+  end
+
   test "loopback registry login uses SSH and sends password only on stdin" do
     Dir.mktmpdir do |directory|
       ssh = File.join(directory, "ssh")
@@ -192,23 +202,31 @@ class DeploymentTest < ActiveSupport::TestCase
     assert_equal false, ssh[:forward_agent]
     assert_equal true, ssh[:keys_only]
     assert_equal ["publickey"], ssh[:auth_methods]
+    ordinary = Net::SSH::Config.for(ProsechoDeploy::HOST, [".devcontainer/ssh.prod"])
+    assert_equal "ssh-prosecho.menloparking.com", ordinary[:host_name]
+    assert_equal :always, ordinary[:verify_host_key]
+    assert_equal ["/prosecho/.devcontainer/production_deploy.pub"], ordinary[:keys]
+    assert_equal true, ordinary[:keys_only]
+    assert_equal false, ordinary[:forward_agent]
   end
 
-  test "accessory admin password is separate from the Rails app password" do
+  test "Kamal reads app and admin secrets from an explicit external file" do
     require "kamal"
     Dir.mktmpdir do |directory|
-      sed = File.join(directory, "sed")
-      File.write(sed, "#!/bin/sh\ncase \"$*\" in *PGADMINPASSWORD*) printf fake-admin;; *) printf fake-app;; esac\n")
-      File.chmod(0o700, sed)
-      old_path = ENV["PATH"]
+      path = File.join(directory, "app.env")
+      values = {"KAMAL_REGISTRY_PASSWORD" => "placeholder", "SECRET_KEY_BASE" => "a" * 64,
+                "PGPASSWORD" => "b" * 64, "PGADMINPASSWORD" => "c" * 64}
+      File.write(path, values.map { |key, value| "#{key}=#{value}\n" }.join, perm: 0o600)
+      old_file = ENV["PROSECHO_DEPLOY_SECRETS_FILE"]
       begin
-        ENV["PATH"] = "#{directory}:#{old_path}"
+        ENV["PROSECHO_DEPLOY_SECRETS_FILE"] = path
+        assert_equal values, ProsechoDeploy.read_secrets(path)
         secrets = Kamal::Secrets.new
-        assert_equal "fake-app", secrets["PGPASSWORD"]
-        assert_equal "fake-admin", secrets["POSTGRES_PASSWORD"]
-        assert_not_equal secrets["PGPASSWORD"], secrets["POSTGRES_PASSWORD"]
+        assert_equal values["PGPASSWORD"], secrets["PGPASSWORD"]
+        assert_equal values["PGADMINPASSWORD"], secrets["POSTGRES_PASSWORD"]
+        assert_equal values["SECRET_KEY_BASE"], secrets["SECRET_KEY_BASE"]
       ensure
-        ENV["PATH"] = old_path
+        old_file ? ENV["PROSECHO_DEPLOY_SECRETS_FILE"] = old_file : ENV.delete("PROSECHO_DEPLOY_SECRETS_FILE")
       end
     end
   end

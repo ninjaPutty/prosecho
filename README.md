@@ -76,8 +76,8 @@ enabled by default: trusted container processes can sign with every loaded host
 identity, including the user-approved production deployment key. Private keys
 remain on the host. The container can access public networks; source code,
 dependencies, and coding agents must be trusted within that credential boundary.
-The separate [deployment overlay](docs/deployment.md) remains available; forwarding
-does not automatically invoke deployment or configure production connections.
+Kamal deployment runs from the ordinary devcontainer with the optional
+[credential overlay](docs/deployment.md); forwarding does not invoke deployment.
 Linux x86_64 rootless Podman is locally tested. macOS ARM64 with OrbStack's
 Docker runtime has a user-supplied development workflow report, not independent
 verification here; see [Local Verification](#local-verification) for scope.
@@ -166,6 +166,13 @@ made.
 
 ## Agent Tools
 
+The development image includes pinned Docker CLI 28.5.2 / Buildx 0.29.1 for
+Kamal's remote-VM builder; no workstation Docker socket is mounted. The user
+SSH config selects the committed production identity and strictly verified host
+pin. The optional deployment credential overlay grants `app` access to runtime
+secrets and production Docker through SSH as documented in
+[Deployment](docs/deployment.md). Rebuild to acquire these image additions.
+
 The development image includes pinned `opencode` 1.18.33, `codex` 0.159.1,
 and `claude` 2.1.285, available to the unprivileged `vscode` user. Run
 `verify-ai-clis` to check their versions. Rebuild the image to install them;
@@ -208,10 +215,10 @@ dumping secrets or bypassing the guidance.
 Host initialization creates and mounts these two directories read-write on `app`,
 using the same host sources as Mixdown and Rhythm:
 
-| Host source | Container target | Purpose |
-| --- | --- | --- |
+| Host source                     | Container target                     | Purpose                     |
+| ------------------------------- | ------------------------------------ | --------------------------- |
 | `${HOME}/.local/share/opencode` | `/home/vscode/.local/share/opencode` | Sessions and authentication |
-| `${HOME}/.cache/opencode` | `/home/vscode/.cache/opencode` | Model and package cache |
+| `${HOME}/.cache/opencode`       | `/home/vscode/.cache/opencode`       | Model and package cache     |
 
 The generated runtime overlay contains one volumes list for state and optional
 logs, SSH, and secrets. State binds use `create_host_path: false`; initialization
@@ -324,13 +331,13 @@ mounts and Docker/OrbStack runtime behavior were not exercised.
 
 ### Portability Status
 
-| Environment / scope | Evidence | Limits |
-| --- | --- | --- |
-| Linux x86_64, rootless Podman development | Locally tested as described above | Not a browser appearance check or cross-platform claim |
-| macOS ARM64, OrbStack Docker development | User-supplied MacBook agent report received 2026-09-29 | Reviewed revision and execution date not provided; not observed here |
-| New CLI/deployment additions | Not covered by the MacBook report | Follow-up verification required before claiming macOS success |
-| Editor Dev Container lifecycle, browser appearance, macOS production image | Not verified by the MacBook report | Compose/HTTP success does not establish these |
-| Other Docker runtimes, OSes, or architectures | No verification recorded here | Do not infer support from the OrbStack report |
+| Environment / scope                                                        | Evidence                                               | Limits                                                               |
+| -------------------------------------------------------------------------- | ------------------------------------------------------ | -------------------------------------------------------------------- |
+| Linux x86_64, rootless Podman development                                  | Locally tested as described above                      | Not a browser appearance check or cross-platform claim               |
+| macOS ARM64, OrbStack Docker development                                   | User-supplied MacBook agent report received 2026-09-29 | Reviewed revision and execution date not provided; not observed here |
+| New CLI/deployment additions                                               | Not covered by the MacBook report                      | Follow-up verification required before claiming macOS success        |
+| Editor Dev Container lifecycle, browser appearance, macOS production image | Not verified by the MacBook report                     | Compose/HTTP success does not establish these                        |
+| Other Docker runtimes, OSes, or architectures                              | No verification recorded here                          | Do not infer support from the OrbStack report                        |
 
 The MacBook report says initialization with `DEVCONTAINER_RUNTIME=orbstack`,
 Compose build/start with the then-required database profile, frozen dependency setup, and both

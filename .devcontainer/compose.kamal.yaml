@@ -1,0 +1,12 @@
+# Optional credentials for Kamal in the ordinary app devcontainer.
+services:
+  app:
+    environment:
+      DOCKER_HOST: ssh://deploy@prosecho-deploy-cloudflare
+    volumes:
+      - type: bind
+        source: ${HOME}/.local/share/menloparking/prosecho/creds/app.env
+        target: /run/prosecho/app.env
+        read_only: true
+        bind:
+          create_host_path: false

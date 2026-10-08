@@ -7,37 +7,59 @@ database errors. Deployment health checks use `/ready`.
 
 ## Runtime Boundary
 
-The normal devcontainer may read host OpenCode tokens as documented in the
-[Agent Tools capability boundary](../README.md#agent-tools), but does not mount
-these dedicated deployment resources. On the host, the coordinating
-agent must prepare `~/.local/share/menloparking/prosecho/` with:
+Deploy with Kamal from the ordinary VS Code `app` devcontainer at `/prosecho`.
+No separate deployment container or workstation Docker socket is required.
+The image includes the pinned Docker CLI, Buildx, and cloudflared; Kamal is in
+the development bundle. Rebuild the image to acquire newly added tools.
 
-- `runtime.env`: mode 600, containing only `CF_SSH_HOST=the-approved-access-hostname`.
-- `agent.sock`: dedicated SSH agent holding exactly the Prosecho deployment key.
-- `creds/deploy.pub`: public half of that key, not the private key.
-- `creds/known_hosts`: independently verified VM host key under the alias `prosecho-deploy-cloudflare`. Do not use blind `ssh-keyscan` trust or disable verification.
-- `creds/app.env`: mode 600, exactly four unquoted lines named `SECRET_KEY_BASE`, `PGPASSWORD`, `PGADMINPASSWORD`, and `KAMAL_REGISTRY_PASSWORD`. `PGPASSWORD` is the app role's password; `PGADMINPASSWORD` is the separate bootstrap administrator password. All three real secrets must be independently generated lowercase hex strings, 32 to 128 characters; database passwords must differ. The unauthenticated loopback registry login uses a nonempty placeholder containing only letters, digits, `.`, `_`, or `-`. No comments or duplicate keys.
+VS Code forwards the existing SSH agent. It must contain the Prosecho deployment
+identity, fingerprint `SHA256:cPD+CrrfISC9ll5vIVtocfcP5dQcyYaMvj5wAebYj5M`;
+other loaded identities are allowed. The committed public selector
+`.devcontainer/production_deploy.pub` selects only that identity for Prosecho SSH.
+The private key stays on the host. SSH uses `.devcontainer/ssh.prod`, installed
+as the image's user SSH config, with the existing strictly verified VM pin.
+Both the hostname and `prosecho-deploy-cloudflare` alias use this connection.
+No Cloudflare Access token or browser login is required.
 
-Credential directories should be mode 700. Credential files and the private key
-stay outside the checkout. The overlay mounts only the dedicated socket, public
-key, pinned known-host file, app secrets, and this source
-tree. `runtime.env` is read by Compose, not bind-mounted. No host home, private
-key, Docker/Podman socket, or general SSH agent is exposed. The deployment
-container can use the agent and secrets while running trusted repository code;
-read-only mounts do not make malicious code safe.
+Use the existing host credential file
+`~/.local/share/menloparking/prosecho/creds/app.env`, mode 600, in a mode-700
+credential directory. It must contain exactly four unique, unquoted `KEY=value`
+lines, without comments:
 
-Start explicitly on Linux x86_64 rootless Podman:
+- `KAMAL_REGISTRY_PASSWORD`: a nonempty loopback-registry placeholder containing
+  only letters, digits, `.`, `_`, or `-`.
+- `PGADMINPASSWORD`: the existing PostgreSQL bootstrap administrator password.
+- `PGPASSWORD`: the existing, separate application role password.
+- `SECRET_KEY_BASE`: the existing application secret.
+
+The three real secrets must be lowercase hex strings, 32 to 128 characters.
+Preserve existing values; generating replacement passwords does not rotate
+an initialized database. Never put secrets in source or build arguments.
+
+The optional `.devcontainer/compose.kamal.yaml` mounts only this credential file
+read-only into `app`, at `/run/prosecho/app.env`, and selects the remote Docker
+host. On the host, apply it when ready to recreate `app`:
 
 ```sh
-podman-compose -p prosecho -f .devcontainer/compose.yaml -f .devcontainer/compose.runtime.yaml -f .devcontainer/compose.deploy.yaml --profile deploy up -d deploy postgres
-podman-compose -p prosecho -f .devcontainer/compose.yaml -f .devcontainer/compose.runtime.yaml -f .devcontainer/compose.deploy.yaml exec deploy sh .devcontainer/setup.sh
+podman-compose -p prosecho -f .devcontainer/compose.yaml -f .devcontainer/compose.runtime.yaml -f .devcontainer/compose.kamal.yaml up -d --build app postgres
 ```
 
-Rebuild the deployment image after these changes; both container images now
-include `psql` for the real local database-role tests. Setup prepares the
-**local** test/development database only. Run the commands below inside `deploy`
-at `/prosecho`. Stop that service when deployment access is
-no longer needed. This overlay is intentionally not part of `devcontainer.json`.
+For Docker/OrbStack use `docker compose`. Retain the overlay on subsequent
+Compose invocations. VS Code supplies agent forwarding on attachment; plain
+Compose terminals need the existing documented developer agent setup.
+Alternatively, keep the credential file outside the checkout inside `app` at
+`~/.local/share/prosecho/app.env`, or set `PROSECHO_DEPLOY_SECRETS_FILE` to its
+path. The default uses `/run/prosecho/app.env` when mounted, then the local file.
+The container-local copy does not survive recreation; the host credential overlay
+is the durable option. The deployment helper and Kamal read the same validated
+file. Do not run `bin/prod/secret` interactively:
+its stdout is intended only for Kamal's secret loader.
+
+Trusted processes in `app` can use these runtime secrets and the forwarded agent,
+including its other identities. The read-only bind prevents writes to the host
+file, not use of its credentials. No private key, host home, or host runtime
+socket is mounted. The older dedicated deployment overlay remains optional;
+it is not required by this workflow.
 
 Docker CLI 28.5.2 and Buildx 0.29.1 come from the digest-pinned official Docker
 CLI image. cloudflared 2026.5.2 is checksum-verified against the official
@@ -65,7 +87,7 @@ sh .devcontainer/install-cloudflared.sh "$HOME/.local/bin/cloudflared"
 ```
 
 The destination directory must already exist and be on `PATH`.
-Developer sessions require no `CF_SSH_HOST` or `/run/prosecho` credential mounts.
+Developer sessions require no `CF_SSH_HOST` or app-secret credential mounts.
 SSH uses `.devcontainer/ssh.prod`, strictly checks the committed public pin in
 `.devcontainer/production_known_hosts`, and does not forward the agent to production.
 The pin was copied from the host's vetted deployment known-host file and matched
@@ -102,7 +124,9 @@ Only `ssh-prosecho.menloparking.com` had its Access gate removed on 2026-10-07;
 SSH public-key authentication, trusted TLS, tunnel routing, and DNS remain unchanged.
 The former service-token file is no longer mounted or read; leave host credentials
 and unrelated remote tokens untouched. This helper is not for Access-protected hosts.
-Both session modes use a 10-second SSH connection timeout.
+Both session modes use a 10-second SSH connection timeout. Setting `DOCKER_HOST`
+in ordinary `app` does not select the dedicated agent configuration; that mode
+also requires its dedicated `/run/prosecho/agent.sock` selection.
 
 The proxy resolves the source helper through `PATH`, including the isolated
 deployment candidate's helper. No image-copied helper is used by these session

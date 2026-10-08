@@ -1,3 +1,4 @@
+FROM docker.io/library/docker:28.5.2-cli@sha256:cd58b396e427d1ee8cddcc3f3b7e8d8c2ba45755c5dd5b821b6e615e1ccf4586 AS docker
 FROM docker.io/library/node:22.23.3-bookworm-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c AS node
 FROM ghcr.io/rails/devcontainer/images/ruby:3.4.7
 
@@ -6,12 +7,16 @@ COPY --from=node /usr/local/bin/node /usr/local/bin/node
 COPY --from=node /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
 COPY verify-ai-clis.sh /usr/local/bin/verify-ai-clis
 COPY install-cloudflared.sh /usr/local/bin/install-cloudflared
+COPY --from=docker /usr/local/bin/docker /usr/local/bin/docker
+COPY --from=docker /usr/local/libexec/docker/cli-plugins/docker-buildx /usr/local/libexec/docker/cli-plugins/docker-buildx
 RUN usermod -g 100 vscode && \
   apt-get update && \
   DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     curl file gh jq less openssh-client postgresql-client procps python3 ripgrep zsh && \
   rm -rf /var/lib/apt/lists/*
-RUN sh /usr/local/bin/install-cloudflared
+RUN sh /usr/local/bin/install-cloudflared && docker --version && docker buildx version
+COPY --chown=vscode:100 ssh.prod /home/vscode/.ssh/config
+RUN chmod 600 /home/vscode/.ssh/config
 # Official npm distributions; optional dependencies select Linux x64/ARM64 binaries.
 # Claude's npm package supplies its native binary without a mutable shell installer.
 RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && \
@@ -23,6 +28,6 @@ RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && \
     /home/vscode/.cache /home/vscode/.local /home/vscode/.local/share
 ENV DISABLE_AUTOUPDATER=1
 USER vscode
-ENV PATH="/home/vscode/.local/bin:/home/vscode/.local/share/mise/shims:${PATH}"
+ENV PATH="/prosecho/bin/prod:/home/vscode/.local/bin:/home/vscode/.local/share/mise/shims:${PATH}"
 RUN verify-ai-clis
 WORKDIR /prosecho

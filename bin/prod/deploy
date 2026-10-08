@@ -163,6 +163,18 @@ module ProsechoDeploy
     secrets
   end
 
+  def self.verify_identity!(runner)
+    identities = runner.run("ssh-add", "-L", capture: true, timeout: 30).lines.map { |line| line.split.first(2) }
+    pinned = File.read(".devcontainer/production_deploy.pub").split.first(2)
+    raise Failure, "Forwarded SSH agent must contain the pinned Prosecho deployment key" unless identities.include?(pinned)
+  end
+
+  def self.secrets_file
+    ENV.fetch("PROSECHO_DEPLOY_SECRETS_FILE") do
+      File.file?("/run/prosecho/app.env") ? "/run/prosecho/app.env" : File.join(Dir.home, ".local/share/prosecho/app.env")
+    end
+  end
+
   def self.phase_input(kind, secrets)
     case kind
     when "bootstrap" then bootstrap_sql(secrets.fetch("PGPASSWORD"))
@@ -290,13 +302,13 @@ module ProsechoDeploy
       elsif mode == "migrate"
         raise Failure, "Review migrations/backups and set APPROVED_MIGRATION_SHA" unless ENV["APPROVED_MIGRATION_SHA"] == sha
       end
+      ENV["DOCKER_HOST"] ||= DOCKER_HOST
       raise Failure, "Remote Docker host required" unless ENV["DOCKER_HOST"] == DOCKER_HOST
       [[%w[bundle exec kamal version], "2.12.0"], [%w[docker --version], "28.5.2,"], [%w[docker buildx version], "v0.29.1 "], [%w[cloudflared --version], "2026.5.2 "]].each do |command, version|
         raise Failure, "Deployment tool version mismatch" unless runner.run(*command, capture: true, timeout: 30).include?(version)
       end
-      identities = runner.run("ssh-add", "-L", capture: true, timeout: 30).lines.map { |line| line.split.first(2) }
-      raise Failure, "Dedicated agent must contain only the pinned deployment key" unless identities == [File.read("/run/prosecho/deploy.pub").split.first(2)]
-      deploy(mode, sha, runner, read_secrets("/run/prosecho/app.env"))
+      verify_identity!(runner)
+      deploy(mode, sha, runner, read_secrets(secrets_file))
     end
   end
 end

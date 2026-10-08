@@ -1,9 +1,11 @@
-Host ssh-prosecho.menloparking.com
+Host ssh-prosecho.menloparking.com prosecho-deploy-cloudflare
   HostName ssh-prosecho.menloparking.com
   User deploy
   ForwardAgent no
   BatchMode yes
   PreferredAuthentications publickey
+  IdentityFile /prosecho/.devcontainer/production_deploy.pub
+  IdentitiesOnly yes
   StrictHostKeyChecking yes
   UserKnownHostsFile /prosecho/.devcontainer/production_known_hosts
   GlobalKnownHostsFile /dev/null
