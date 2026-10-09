@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_08_000002) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_08_000003) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -77,6 +77,32 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_08_000002) do
     t.datetime "created_at", null: false
     t.boolean "ready", default: false, null: false
     t.datetime "updated_at", null: false
+  end
+
+  create_table "person_change_events", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.uuid "campus_id", null: false
+    t.datetime "created_at", null: false
+    t.jsonb "current_value", default: {}, null: false
+    t.jsonb "details", default: {}, null: false
+    t.datetime "discovered_at", null: false
+    t.string "event_type", null: false
+    t.boolean "household_reference_changed", default: false, null: false
+    t.uuid "person_profile_id"
+    t.string "policy_revision", null: false
+    t.uuid "previous_campus_id", null: false
+    t.jsonb "previous_value", default: {}, null: false
+    t.uuid "refresh_run_id", null: false
+    t.integer "related_campus_rock_ids", default: [], null: false, array: true
+    t.uuid "rock_guid", null: false
+    t.integer "rock_id", null: false
+    t.string "source_system", null: false
+    t.datetime "updated_at", null: false
+    t.index ["campus_id", "policy_revision", "discovered_at"], name: "index_person_changes_for_feed"
+    t.index ["campus_id"], name: "index_person_change_events_on_campus_id"
+    t.index ["person_profile_id"], name: "index_person_change_events_on_person_profile_id"
+    t.index ["previous_campus_id"], name: "index_person_change_events_on_previous_campus_id"
+    t.index ["refresh_run_id", "rock_guid", "event_type"], name: "index_person_changes_once_per_run", unique: true
+    t.index ["refresh_run_id"], name: "index_person_change_events_on_refresh_run_id"
   end
 
   create_table "person_profiles", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
@@ -156,6 +182,21 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_08_000002) do
     t.datetime "updated_at", null: false
     t.index ["actor_id"], name: "index_person_refresh_runs_on_actor_id"
     t.index ["singleton_slot"], name: "index_person_refresh_runs_one_active", unique: true, where: "((status)::text = ANY (ARRAY[('queued'::character varying)::text, ('running'::character varying)::text]))"
+  end
+
+  create_table "person_snapshots", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.uuid "campus_id", null: false
+    t.string "campus_scope", default: [], null: false, array: true
+    t.datetime "created_at", null: false
+    t.datetime "observed_at", null: false
+    t.uuid "person_profile_id", null: false
+    t.string "policy_revision", null: false
+    t.uuid "refresh_run_id", null: false
+    t.jsonb "state", default: {}, null: false
+    t.datetime "updated_at", null: false
+    t.index ["campus_id"], name: "index_person_snapshots_on_campus_id"
+    t.index ["person_profile_id"], name: "index_person_snapshots_on_person_profile_id", unique: true
+    t.index ["refresh_run_id"], name: "index_person_snapshots_on_refresh_run_id"
   end
 
   create_table "solid_queue_batch_executions", force: :cascade do |t|
@@ -308,6 +349,24 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_08_000002) do
     t.index ["key"], name: "index_solid_queue_semaphores_on_key", unique: true
   end
 
+  create_table "sync_schedules", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.uuid "administrator_id", null: false
+    t.datetime "created_at", null: false
+    t.boolean "enabled", default: false, null: false
+    t.integer "interval_hours", default: 24, null: false
+    t.datetime "last_checked_at"
+    t.datetime "last_enqueued_at"
+    t.string "last_error_code"
+    t.integer "lock_version", default: 0, null: false
+    t.datetime "next_due_at"
+    t.integer "slot", default: 1, null: false
+    t.datetime "updated_at", null: false
+    t.index ["administrator_id"], name: "index_sync_schedules_on_administrator_id"
+    t.index ["slot"], name: "index_sync_schedules_on_slot", unique: true
+    t.check_constraint "interval_hours >= 1 AND interval_hours <= 168", name: "sync_schedule_interval"
+    t.check_constraint "slot = 1", name: "sync_schedule_singleton"
+  end
+
   create_table "users", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
     t.boolean "active", default: true, null: false
     t.datetime "created_at", null: false
@@ -330,9 +389,16 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_08_000002) do
   add_foreign_key "campuses", "campuses", column: "parent_id"
   add_foreign_key "data_policies", "users", column: "confirmed_by_id"
   add_foreign_key "data_policies", "users", column: "recorded_by_id"
+  add_foreign_key "person_change_events", "campuses"
+  add_foreign_key "person_change_events", "campuses", column: "previous_campus_id"
+  add_foreign_key "person_change_events", "person_profiles", on_delete: :nullify
+  add_foreign_key "person_change_events", "person_refresh_runs", column: "refresh_run_id"
   add_foreign_key "person_profiles", "campuses"
   add_foreign_key "person_refresh_entries", "person_refresh_runs", column: "run_id", on_delete: :cascade
   add_foreign_key "person_refresh_runs", "users", column: "actor_id"
+  add_foreign_key "person_snapshots", "campuses"
+  add_foreign_key "person_snapshots", "person_profiles", on_delete: :cascade
+  add_foreign_key "person_snapshots", "person_refresh_runs", column: "refresh_run_id"
   add_foreign_key "solid_queue_batch_executions", "solid_queue_batches", column: "batch_id", on_delete: :cascade
   add_foreign_key "solid_queue_batch_executions", "solid_queue_jobs", column: "job_id", on_delete: :cascade
   add_foreign_key "solid_queue_blocked_executions", "solid_queue_jobs", column: "job_id", on_delete: :cascade
@@ -341,4 +407,5 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_08_000002) do
   add_foreign_key "solid_queue_ready_executions", "solid_queue_jobs", column: "job_id", on_delete: :cascade
   add_foreign_key "solid_queue_recurring_executions", "solid_queue_jobs", column: "job_id", on_delete: :cascade
   add_foreign_key "solid_queue_scheduled_executions", "solid_queue_jobs", column: "job_id", on_delete: :cascade
+  add_foreign_key "sync_schedules", "users", column: "administrator_id"
 end

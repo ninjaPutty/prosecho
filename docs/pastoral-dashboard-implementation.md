@@ -5,7 +5,8 @@
 Prosecho is a Rails 8.1.3.1, Ruby 3.4.7, PostgreSQL, Phlex 2, and Tailwind CSS 4 starter. Phase 0
 now provides browser-managed Devise/Argon2id sign-in, campus-scoped users, a private foundation
 dashboard, and Solid Queue-backed ActiveJob readiness scheduling and a tested GET-only Rock adapter.
-It has no live synchronization or map library. Menlo UI is not installed. See
+Phase 2 adds configured scheduled refreshes and discovery history; no map library is installed.
+Menlo UI is not installed. See
 [Phase 0 foundations](phase-0-foundations.md) for the implemented boundary and unresolved data
 decisions.
 
@@ -85,10 +86,11 @@ columns or constrained JSONB for snapshots, not an unbounded copy of all API res
 Define scheduled sync work as Rails ActiveJob jobs. ActiveJob is the job interface; production also
 requires a persistent queue adapter and a recurring schedule runner. Phase 0 selects Solid Queue and
 its recurring-task support, using the existing PostgreSQL database and a separate job role. The
-first recurring job checks local readiness only; no live sync exists yet. Do not use the in-process
+first recurring job checks local readiness; the Phase 2 dispatcher also checks the saved schedule.
+Do not use the in-process
 async adapter for production synchronization.
 
-Start with a configurable four-hour cadence. Each run pages through the authorized population,
+Start with a configurable 24-hour cadence. Each run pages through the authorized population,
 fetches only approved fields/relationships, maps the response, and compares it to the last
 successful snapshot. Commit the updated projection and detected events atomically. First import
 establishes a baseline and creates no change events. Incomplete runs do not infer deletions or

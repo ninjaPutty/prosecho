@@ -43,8 +43,8 @@ hosting. See [Phase 0 foundations](phase-0-foundations.md) for verification and 
 **Projection/workspace status:** local profiles, an administrator-only all-campus refresh,
 session-backed filters, portrait proxy, and people/detail views are implemented. Viewing remains
 campus-scoped. See
-[pastoral workspace](phase-1-pastoral-workspace.md). Map and Changes currently show the real setup
-state for their later-phase services/events.
+[pastoral workspace](phase-1-pastoral-workspace.md). Map shows its setup state; the Phase 2 Changes
+view displays discovered differences after comparison baselines exist.
 
 **First-step status:** the scoped, policy-gated paginated reads and normalized person mapper are
 implemented and verified. See [person-read pipeline](phase-1-person-pipeline.md). Local person
@@ -73,6 +73,11 @@ live preview HTTP checks do not establish browser acceptance. Durable runtime-ke
 production rollout remain operational follow-ups.
 
 ## Phase 2 — Scheduled sync and pastoral changes
+
+**Implementation status:** persisted comparison snapshots, immutable discovery events, atomic
+publication, a permission-scoped Changes feed, and an administrator-configured 24-hour default
+schedule are implemented locally. See [Phase 2 operation](phase-2-changes-and-scheduling.md).
+Live history requires a quiet baseline import followed by a later successful import with differences.
 
 - Implement ActiveJob sync jobs and the persistent recurring schedule.
 - Add run records, pagination/checkpoints, idempotent retries, overlap prevention, and

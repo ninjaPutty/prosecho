@@ -1,4 +1,11 @@
 class AdminPreview < Lookbook::Preview
+  def scheduled_refresh
+    schedule = SyncSchedule.new(enabled: true, interval_hours: 24)
+    schedule.define_singleton_method(:health) { "healthy" }
+    schedule.define_singleton_method(:due_at) { Time.utc(2026, 10, 9, 12) }
+    render Components::Admin::SyncScheduleForm.new(schedule: schedule)
+  end
+
   def all_campus_refresh
     policy = DataPolicy.new(DataPolicy.default_attributes.merge(status: "confirmed"))
     render Components::Admin::Dashboard.new(accounts: [], campuses: [], policy: policy)

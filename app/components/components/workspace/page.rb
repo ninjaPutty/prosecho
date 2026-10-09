@@ -39,9 +39,12 @@ module Components
                   end
                 end
                 nav(class: "flex items-center gap-4 text-sm", aria_label: "Workspace views") do
-                  {people: ["People", view_context.dashboard_path],
-                   map: ["Map", view_context.workspace_map_path],
-                   changes: ["Changes", view_context.workspace_changes_path]}.each do |key, values|
+                  links = {people: ["People", view_context.dashboard_path],
+                           map: ["Map", view_context.workspace_map_path]}
+                  if view_context.current_user&.view_history? || active == :changes
+                    links[:changes] = ["Changes", view_context.workspace_changes_path]
+                  end
+                  links.each do |key, values|
                     a(href: values.last, aria_current: (active == key) ? "page" : nil,
                       class: (active == key) ? "font-semibold text-teal-800" : "text-stone-500") do
                       plain values.first

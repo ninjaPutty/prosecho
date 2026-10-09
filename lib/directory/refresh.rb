@@ -59,10 +59,7 @@ module Directory
           existing = @run.entries.where(rock_guid: people.keys).count
           duplicates = page.people.size - people.size + existing
           if people.any?
-            @run.entries.upsert_all(people.values.map do |person|
-              {run_id: @run.id, rock_guid: person.rock_guid, payload: person.to_h.as_json,
-               observed_at: page.observed_at}
-            end, unique_by: [:run_id, :rock_guid])
+            PersonRefreshEntry.checkpoint!(run: @run, people: people.values, observed_at: page.observed_at)
           end
           @run.update!(page_count: @run.page_count + 1,
             checkpoint_retained: true, duplicate_count: @run.duplicate_count + duplicates,
@@ -127,6 +124,7 @@ module Directory
         PersonProfile.connection.execute("SELECT pg_advisory_xact_lock(73005000)")
         verify!(actor)
         policy = DataPolicy.current
+        discovered_at = Time.current.utc
         @run.entries.find_each do |entry|
           data = entry.payload
           @publishing_rock_id = data["rock_id"]
@@ -170,6 +168,8 @@ module Directory
             person.photo_observed_at = nil
           end
           person.save!
+          ChangeRecorder.new(person: person, run: @run, payload: data,
+            observed_at: entry.observed_at, discovered_at: discovered_at).call
         end
         missing = PersonProfile.where(campus_id: @run.campus_ids, in_population: true)
           .where.not(rock_guid: @run.entries.select(:rock_guid))
@@ -177,6 +177,7 @@ module Directory
         cutoff = policy.profile_retention_days.days.ago
         PersonProfile.where(campus_id: @run.campus_ids, in_population: false)
           .where(left_scope_at: ...cutoff).delete_all
+        PersonChangeEvent.where(discovered_at: ...policy.history_retention_days.days.ago).delete_all
         @run.update!(status: "succeeded", imported_count: @run.entries.count,
           checkpoint_retained: false, finished_at: Time.current)
         @run.entries.delete_all

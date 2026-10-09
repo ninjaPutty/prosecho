@@ -1,13 +1,14 @@
 module Directory
   class Query
     PAGE_SIZE = 24
-    attr_reader :errors, :filters, :options, :page, :people, :policy, :total
+    attr_reader :errors, :filtered_scope, :filters, :options, :page, :people, :policy, :total
 
     def initialize(actor:, filters: {}, page: 1)
       @policy = DataPolicy.current
+      @actor = actor
       @scope = PersonProfile.visible_to(actor, policy: @policy)
       @filters = filters.to_h.stringify_keys.slice("campus_id", "connection_status",
-        "min_age", "max_age", "town", "search").transform_values(&:to_s)
+        "min_age", "max_age", "town", "search", "change_days").transform_values(&:to_s)
       @errors = []
       @page = page.to_i.clamp(1, 10000)
       @options = {
@@ -17,6 +18,7 @@ module Directory
       }
       validate_filters
       results = apply_filters
+      @filtered_scope = results
       @total = results.count
       @people = results.includes(:campus).order(:display_name, :id)
         .limit(PAGE_SIZE).offset((@page - 1) * PAGE_SIZE).to_a
@@ -41,15 +43,25 @@ module Directory
         result = result.where(connection_status_id: id)
       end
       result = result.where(city: filters["town"]) if filters["town"].present?
+      if filters["change_days"].present?
+        recent = PersonChangeEvent.visible_to(@actor, policy: policy)
+          .where(discovered_at: filters["change_days"].to_i.days.ago..Time.current)
+        result = result.where(id: recent.select(:person_profile_id))
+      end
       if filters["search"].present?
         term = "%#{PersonProfile.sanitize_sql_like(filters["search"])}%"
-        result = result.where("display_name ILIKE ?", term)
+        bind = ActiveRecord::Relation::QueryAttribute.new("display_name", term,
+          PersonProfile.type_for_attribute("display_name"))
+        result = result.where(PersonProfile.arel_table[:display_name].matches(Arel::Nodes::BindParam.new(bind)))
       end
       %w[min_age max_age].each do |key|
         next if filters[key].blank?
-        comparison = (key == "min_age") ? ">=" : "<="
-        result = result.where("DATE_PART('year', AGE(?::date, birth_date)) #{comparison} ?",
-          Date.current, filters[key].to_i)
+        birth = PersonProfile.arel_table[:birth_date]
+        age = Arel::Nodes::NamedFunction.new("DATE_PART", [Arel::Nodes.build_quoted("year"),
+          Arel::Nodes::NamedFunction.new("AGE", [Arel::Nodes.build_quoted(Date.current), birth])])
+        bind = Arel::Nodes::BindParam.new(ActiveRecord::Relation::QueryAttribute.new(key,
+          filters[key].to_i, ActiveRecord::Type::Integer.new))
+        result = result.where((key == "min_age") ? age.gteq(bind) : age.lteq(bind))
       end
       result
     end
@@ -78,6 +90,12 @@ module Directory
         errors << "Minimum age must not exceed maximum age."
       end
       errors << "Keep the name search to 100 characters." if filters["search"].to_s.length > 100
+      if filters["change_days"].present?
+        errors << "History permission is required." unless @actor.view_history?
+        unless PersonChangeEvent::WINDOWS.map(&:to_s).include?(filters["change_days"])
+          errors << "Choose a discovery window of 7, 14, 30, or 90 days."
+        end
+      end
     end
   end
 end

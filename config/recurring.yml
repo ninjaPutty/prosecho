@@ -1,4 +1,7 @@
 development:
+  directory_schedule:
+    class: ScheduledPersonRefreshJob
+    schedule: every minute
   directory_recovery:
     class: PersonRefreshRecoveryJob
     schedule: every minute
@@ -6,6 +9,9 @@ development:
     class: FoundationReadinessJob
     schedule: every 4 hours
 production:
+  directory_schedule:
+    class: ScheduledPersonRefreshJob
+    schedule: every minute
   directory_recovery:
     class: PersonRefreshRecoveryJob
     schedule: every minute

@@ -188,13 +188,12 @@ class PastoralWorkspaceTest < ActionDispatch::IntegrationTest
     assert_includes response.body, "10 Fixture Lane"
   end
 
-  test "map and change views explain real setup state rather than presenting fake data" do
+  test "map explains setup state and change history requires explicit permission" do
     get workspace_map_path
     assert_response :success
     assert_includes response.body, "Private map setup"
     get workspace_changes_path
-    assert_response :success
-    assert_includes response.body, "Change history setup"
+    assert_response :forbidden
   end
 
   test "invalid age ranges and forged campuses cannot broaden directory access" do

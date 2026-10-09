@@ -17,7 +17,8 @@ module Pastoral
     end
 
     def blockers
-      (directory_blockers + map_blockers + ["Live sync is not implemented in Phase 0"]).uniq
+      scheduling = live_sync_enabled? ? [] : ["Scheduled sync is disabled"]
+      (directory_blockers + map_blockers + scheduling).uniq
     end
 
     def data_blockers
@@ -74,11 +75,11 @@ module Pastoral
     end
 
     def inspect
-      "#<#{self.class.name} read_only=true live_sync_enabled=false>"
+      "#<#{self.class.name} read_only=true live_sync_enabled=#{live_sync_enabled?}>"
     end
 
     def live_sync_enabled?
-      false
+      SyncSchedule.current.enabled?
     end
 
     def read_only?

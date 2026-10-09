@@ -11,8 +11,9 @@ Choosing a person opens approved details in the Turbo panel while keeping the fi
 profile URLs also work. Chapel-inspired teal, portrait or initial identity rows, freshness
 summaries, and empty/error states prioritize people. Portrait failures fall back to initials.
 
-Map and Changes navigation currently provides accurate setup views, not fake points/events. Private
-map services and scheduled comparisons are later phases.
+Map navigation provides a setup view for private-map services. The
+[Phase 2 Changes view](phase-2-changes-and-scheduling.md) shows permission-scoped discovered
+differences once successful refreshes establish and compare baselines.
 
 ## Refresh and publication
 
@@ -31,7 +32,8 @@ additional pastoral viewing access.
 `PersonRefreshRun.enqueue!(actor: administrator)` is the shared entry point used by the button and
 available for a future scheduler. It creates or reconnects an all-campus run and queues
 PersonRefreshJob in the directory queue. The administrator must remain active, unlocked, and an
-administrator throughout reading, retry, and publication. No recurring full refresh is enabled yet.
+administrator throughout reading, retry, and publication. Administrators can now enable the
+persisted [Phase 2 schedule](phase-2-changes-and-scheduling.md), which defaults to 24 hours.
 
 Person downloads default to 250 source rows per page. Set the server's process-only
 `ROCK_PERSON_PAGE_SIZE=500` to use larger pages; supported sizes are 1–500. Address and household

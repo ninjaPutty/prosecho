@@ -19,6 +19,7 @@ Rails.application.routes.draw do
       post :import, on: :collection
     end
     resource :data_policy, only: %i[show update]
+    resource :sync_schedule, only: %i[show update]
   end
   mount Lookbook::Engine, at: "/lookbook" if Rails.env.development?
   root "home#index"

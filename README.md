@@ -16,7 +16,13 @@ configuration are unchanged.
 Only administrators can **Refresh people from Rock**, from `/admin` or their pastoral workspace.
 It imports every campus in the catalog, regardless of directory filters or the administrator's
 viewing grants. Staff viewing access remains campus-scoped. The same all-campus entry point is
-available for future scheduled refreshes.
+used by scheduled refreshes.
+
+[Phase 2](docs/phase-2-changes-and-scheduling.md) adds administrator-managed scheduled refreshes
+(24-hour default) and a permission-scoped Changes feed. Configure the cadence and enable it at
+`/admin/sync_schedule`. The first successful comparison import is a quiet baseline; later complete
+imports report discovered status, address, and household differences. Staff need history permission
+to use the feed and its discovery-time filters.
 
 Use **Data decisions** on `/admin` (or `/admin/data_policy`) to save retention periods,
 source/interpretation rules, the initial field allowlist, and custom attribute keys. Drafts can be

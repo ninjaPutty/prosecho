@@ -17,6 +17,9 @@ module Components
           end
           section(class: "mb-10 rounded-xl bg-white p-6 shadow-sm") do
             h2(class: "mb-3 text-xl font-semibold") { "Rock people refresh" }
+            a(href: view_context.admin_sync_schedule_path, class: "mb-4 inline-block underline") do
+              plain "Scheduled refresh settings"
+            end
             p(class: "mb-5 text-stone-600") do
               plain "Import people from every campus in the catalog, including inactive campuses."
               plain " Viewing grants and directory filters do not limit this administrator operation."

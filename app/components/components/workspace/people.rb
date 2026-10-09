@@ -197,6 +197,10 @@ module Components
               end
             end
             select_filter("Home town", "town", @query.options[:towns].map { |town| [town, town] })
+            if @actor.respond_to?(:view_history?) && @actor.view_history?
+              select_filter("Changes discovered within", "change_days",
+                [[7, "1 week"], [14, "2 weeks"], [30, "30 days"], [90, "90 days"]])
+            end
             button(type: "submit", class: "#{BUTTON} w-full") { "Apply filters" }
           end
         end
