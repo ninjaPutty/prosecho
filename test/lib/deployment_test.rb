@@ -197,7 +197,7 @@ class DeploymentTest < ActiveSupport::TestCase
     assert_equal [ProsechoDeploy::HOST], config.accessories.first.hosts
     assert_equal false, config.ssh.options[:forward_agent]
     document = YAML.load_file("config/deploy.yml")
-    assert_equal %w[SECRET_KEY_BASE PGPASSWORD], document.dig("env", "secret")
+    assert_equal %w[SECRET_KEY_BASE PGPASSWORD ROCK_API_KEY], document.dig("env", "secret")
     assert_equal "postgres", document.dig("accessories", "postgres", "env", "clear", "POSTGRES_USER")
     assert_equal "postgres", document.dig("accessories", "postgres", "env", "clear", "POSTGRES_DB")
     ssh = Net::SSH::Config.for(ProsechoDeploy::HOST, [".devcontainer/ssh.deploy"])
@@ -222,15 +222,26 @@ class DeploymentTest < ActiveSupport::TestCase
                 "PGPASSWORD" => "b" * 64, "PGADMINPASSWORD" => "c" * 64}
       File.write(path, values.map { |key, value| "#{key}=#{value}\n" }.join, perm: 0o600)
       old_file = ENV["PROSECHO_DEPLOY_SECRETS_FILE"]
+      old_rock_file = ENV["PROSECHO_ROCK_API_KEY_FILE"]
+      rock_file = File.join(directory, "rock-api-key")
+      File.write(rock_file, "synthetic-rock-key\n", perm: 0o600)
       begin
         ENV["PROSECHO_DEPLOY_SECRETS_FILE"] = path
+        ENV["PROSECHO_ROCK_API_KEY_FILE"] = rock_file
         assert_equal values, ProsechoDeploy.read_secrets(path)
         secrets = Kamal::Secrets.new
         assert_equal values["PGPASSWORD"], secrets["PGPASSWORD"]
         assert_equal values["PGADMINPASSWORD"], secrets["POSTGRES_PASSWORD"]
         assert_equal values["SECRET_KEY_BASE"], secrets["SECRET_KEY_BASE"]
+        assert_equal "synthetic-rock-key", secrets["ROCK_API_KEY"]
+        assert_equal values.keys.sort, ProsechoDeploy.read_secrets(path).keys.sort
       ensure
         old_file ? ENV["PROSECHO_DEPLOY_SECRETS_FILE"] = old_file : ENV.delete("PROSECHO_DEPLOY_SECRETS_FILE")
+        if old_rock_file
+          ENV["PROSECHO_ROCK_API_KEY_FILE"] = old_rock_file
+        else
+          ENV.delete("PROSECHO_ROCK_API_KEY_FILE")
+        end
       end
     end
   end
@@ -395,6 +406,29 @@ class DeploymentTest < ActiveSupport::TestCase
       assert_raises(ProsechoDeploy::Failure) { ProsechoDeploy.read_secrets(file) }
       File.chmod(0o644, file)
       assert_raises(ProsechoDeploy::Failure) { ProsechoDeploy.read_secrets(file) }
+    end
+  end
+
+  test "dedicated Rock key file requires private permissions and never reflects invalid values" do
+    Dir.mktmpdir do |directory|
+      path = File.join(directory, "rock-api-key")
+      File.write(path, "synthetic-rock/key+with=characters\n", perm: 0o600)
+      assert_equal "synthetic-rock/key+with=characters", ProsechoDeploy.read_rock_key(path)
+      link = File.join(directory, "linked-key")
+      File.symlink(path, link)
+      assert_raises(ProsechoDeploy::Failure) { ProsechoDeploy.read_rock_key(link) }
+      File.chmod(0o644, path)
+      assert_raises(ProsechoDeploy::Failure) { ProsechoDeploy.read_rock_key(path) }
+      File.chmod(0o600, path)
+      File.write(path, "synthetic-private-key\nsecond-line")
+      error = assert_raises(ProsechoDeploy::Failure) { ProsechoDeploy.read_rock_key(path) }
+      assert_not_includes error.message, "synthetic-private-key"
+      File.write(path, "")
+      assert_raises(ProsechoDeploy::Failure) { ProsechoDeploy.read_rock_key(path) }
+      File.binwrite(path, "synthetic-private-\xFF")
+      assert_raises(ProsechoDeploy::Failure) { ProsechoDeploy.read_rock_key(path) }
+      File.write(path, "x" * 4097)
+      assert_raises(ProsechoDeploy::Failure) { ProsechoDeploy.read_rock_key(path) }
     end
   end
 end

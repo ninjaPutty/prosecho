@@ -45,6 +45,7 @@ env:
   secret:
     - SECRET_KEY_BASE
     - PGPASSWORD
+    - ROCK_API_KEY
 accessories:
   postgres:
     image: postgres:17

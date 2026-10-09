@@ -10,3 +10,9 @@ services:
         read_only: true
         bind:
           create_host_path: false
+      - type: bind
+        source: ${HOME}/.local/share/menloparking/prosecho/creds/rock-api-key
+        target: /run/prosecho/rock-api-key
+        read_only: true
+        bind:
+          create_host_path: false

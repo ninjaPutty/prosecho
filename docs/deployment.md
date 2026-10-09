@@ -37,9 +37,15 @@ The three real secrets must be lowercase hex strings, 32 to 128 characters.
 Preserve existing values; generating replacement passwords does not rotate
 an initialized database. Never put secrets in source or build arguments.
 
-The optional `.devcontainer/compose.kamal.yaml` mounts only this credential file
-read-only into `app`, at `/run/prosecho/app.env`, and selects the remote Docker
-host. On the host, apply it when ready to recreate `app`:
+The runtime Rock key is separate from the four-key database/deployment file. Store its single raw
+token in `~/.local/share/menloparking/prosecho/creds/rock-api-key`, mode 600 in the same private
+credential directory. Kamal loads it as `ROCK_API_KEY` for both web and job roles, never as a build
+argument. The loader rejects empty, multiline, non-printable, oversized, or non-private key files
+without reflecting their contents in errors.
+
+The optional `.devcontainer/compose.kamal.yaml` mounts these dedicated credential files
+read-only into `app`, at `/run/prosecho/app.env` and `/run/prosecho/rock-api-key`,
+and selects the remote Docker host. On the host, apply it when ready to recreate `app`:
 
 ```sh
 podman-compose -p prosecho -f .devcontainer/compose.yaml -f .devcontainer/compose.runtime.yaml -f .devcontainer/compose.kamal.yaml up -d --build app postgres
@@ -55,6 +61,13 @@ The container-local copy does not survive recreation; the host credential overla
 is the durable option. The deployment helper and Kamal read the same validated
 file. Do not run `bin/prod/secret` interactively:
 its stdout is intended only for Kamal's secret loader.
+
+For a container-local Rock file, use `~/.local/share/prosecho/rock-api-key`, or set
+`PROSECHO_ROCK_API_KEY_FILE` to an existing private file. The default prefers
+`/run/prosecho/rock-api-key` when mounted. Provision the key before deploying the configuration that
+requires it. Restarting existing containers preserves their runtime environment; a key change needs
+the normal reviewed redeployment of both roles. Never append the Rock key to the strict four-line
+`app.env`, print the secret helper's output, or copy the full OpenCode secrets file for deployment.
 
 Trusted processes in `app` can use these runtime secrets and the forwarded agent,
 including its other identities. The read-only bind prevents writes to the host

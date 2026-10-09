@@ -150,6 +150,19 @@ module ProsechoDeploy
     SQL
   end
 
+  def self.read_rock_key(file = rock_key_file)
+    stat = File.lstat(file)
+    unless stat.file? && stat.mode & 0o777 == 0o600 && stat.size <= 4098
+      raise Failure, "Rock key file must be a bounded regular file with mode 600"
+    end
+    key = File.binread(file).strip
+    unless key.bytesize.between?(1, 4096) && key.ascii_only? &&
+        key.bytes.all? { |byte| byte.between?(33, 126) }
+      raise Failure, "Rock key must contain one nonempty printable token"
+    end
+    key
+  end
+
   def self.read_secrets(file)
     raise Failure, "app.env must be mode 600" unless File.stat(file).mode & 0o777 == 0o600
     lines = File.readlines(file, chomp: true)
@@ -167,6 +180,13 @@ module ProsechoDeploy
     identities = runner.run("ssh-add", "-L", capture: true, timeout: 30).lines.map { |line| line.split.first(2) }
     pinned = File.read(".devcontainer/production_deploy.pub").split.first(2)
     raise Failure, "Forwarded SSH agent must contain the pinned Prosecho deployment key" unless identities.include?(pinned)
+  end
+
+  def self.rock_key_file
+    ENV.fetch("PROSECHO_ROCK_API_KEY_FILE") do
+      File.file?("/run/prosecho/rock-api-key") ? "/run/prosecho/rock-api-key" :
+        File.join(Dir.home, ".local/share/prosecho/rock-api-key")
+    end
   end
 
   def self.secrets_file
