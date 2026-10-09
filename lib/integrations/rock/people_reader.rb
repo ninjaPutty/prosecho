@@ -15,11 +15,20 @@ module Integrations
       end
       MAX_RELATED_PAGES = 10
 
-      def initialize(actor:, client: nil, campus_ids: nil, import_run: nil)
+      def initialize(actor:, client: nil, campus_ids: nil, import_run: nil, cache_limit: 1024)
         @actor = actor
         @client = client
         @requested_campus_ids = campus_ids
         @import_run = import_run
+        @owns_client = client.nil?
+        @addresses = FamilyCache.new(max_entries: cache_limit)
+        @households = FamilyCache.new(max_entries: cache_limit)
+      end
+
+      def close
+        @client.close if @owns_client && @client&.respond_to?(:close)
+        @addresses.clear
+        @households.clear
       end
 
       def read_page(limit: 25, offset: 0, after_id: nil)
@@ -33,7 +42,7 @@ module Integrations
         fields = policy.selected_fields.dup
         fields.delete("photo") unless @import_run || @actor.view_photos?
         precise = @import_run ? true : @actor.view_locations?
-        client = @client || ReadClient.new
+        client = @client ||= ReadClient.new
         options = {campus_ids: scope.keys, fields: fields,
                    attribute_keys: policy.attribute_keys, limit: limit,
                    offset: after_id.nil? ? offset : 0}
@@ -52,34 +61,30 @@ module Integrations
         verify_snapshot!(scope: scope, fields: fields, precise: precise, revision: revision)
         mapper = PersonMapper.new(fields: fields, attribute_keys: policy.attribute_keys,
           campuses: scope, precise: precise)
-        addresses = {}
-        households = {}
+        families = rows.filter_map do |row|
+          value = row["PrimaryFamilyId"]
+          value if value.is_a?(Integer) && value.between?(1, 2147483647)
+        end.uniq
+        context = [@actor.id, revision, scope.keys.sort, fields.sort, precise]
+        if @cache_context != context
+          @addresses.clear
+          @households.clear
+          @cache_context = context
+        end
+        addresses = fields.include?("home_address") ?
+          fetch_families(families, @addresses, ReadClient::MAX_HOME_FAMILY_BATCH,
+            scope: scope, fields: fields, precise: precise, revision: revision) do |ids, page_offset|
+            client.home_locations_for_families(ids, limit: 100, offset: page_offset, precise: precise)
+          end : {}
+        households = fields.include?("household") ?
+          fetch_families(families, @households, ReadClient::MAX_MEMBER_FAMILY_BATCH,
+            scope: scope, fields: fields, precise: precise, revision: revision, members: true) do |ids, page_offset, campuses|
+            client.household_members_for_families(ids, limit: 100, offset: page_offset, campus_ids: campuses)
+          end : {}
         people = rows.map do |row|
           family = row["PrimaryFamilyId"]
           family = nil unless family.is_a?(Integer) && family.between?(1, 2147483647)
-          locations = if family && fields.include?("home_address")
-            addresses[family] ||= related_pages do |page_offset|
-              verify_snapshot!(scope: scope, fields: fields, precise: precise, revision: revision)
-              client.home_locations(family, limit: 100, offset: page_offset, precise: precise)
-            end
-          else
-            []
-          end
-          members = if family && fields.include?("household")
-            # Rock's OData node limit rejects a long Person/PrimaryCampusId OR
-            # filter. Paginate each campus partition fully before combining it.
-            households[family] ||= scope.keys.each_slice(ReadClient::MAX_HOUSEHOLD_CAMPUS_SCOPE)
-              .flat_map do |campus_ids|
-              related_pages do |page_offset|
-                verify_snapshot!(scope: scope, fields: fields, precise: precise, revision: revision)
-                client.household_members(family, limit: 100,
-                  offset: page_offset, campus_ids: campus_ids)
-              end
-            end
-          else
-            []
-          end
-          mapper.map(row, locations: locations, members: members)
+          mapper.map(row, locations: addresses.fetch(family, []), members: households.fetch(family, []))
         end
         # Keep the source row count for pagination. Staging deduplicates GUIDs;
         # treating a repeated identity as a short page would truncate the scan.
@@ -136,9 +141,63 @@ module Integrations
         policy
       end
 
-      def related_pages
+      def fetch_families(families, cache, batch_size, scope:, fields:, precise:, revision:, members: false)
+        result = families.to_h { |id| [id, cache.fetch(id)] }
+        missing = families.select { |id| result[id].nil? }
+        partitions = members ? scope.keys.each_slice(ReadClient::MAX_HOUSEHOLD_CAMPUS_SCOPE).to_a : [nil]
+        missing.each_slice(batch_size) do |ids|
+          collected = ids.to_h { |id| [id, []] }
+          partitions.each do |campuses|
+            rows = related_pages(max_pages: MAX_RELATED_PAGES * ids.size) do |offset|
+              verify_snapshot!(scope: scope, fields: fields, precise: precise, revision: revision)
+              batch = yield(ids, offset, campuses)
+              unless batch.is_a?(Array) && batch.all? { |row| row.is_a?(Hash) && ids.include?(row["GroupId"]) }
+                raise ReadClient::ReadError.new("Rock returned unrelated family records", reason: "invalid_related_scope")
+              end
+              batch
+            end
+            grouped = rows.group_by { |row| row["GroupId"] }
+            ids.each do |id|
+              values = grouped.fetch(id, [])
+              if values.size > MAX_RELATED_PAGES * 100
+                raise ReadClient::ReadError.new("Related records exceeded the family limit", reason: "related_page_limit")
+              end
+              collected[id].concat(values.map { |row| project_related(row, members: members, precise: precise) })
+            end
+          end
+          verify_snapshot!(scope: scope, fields: fields, precise: precise, revision: revision)
+          # Only fully paginated family results enter the cache, including empty
+          # results. Page-local references survive LRU eviction during this page.
+          ids.each do |id|
+            result[id] = collected.fetch(id)
+            cache.store(id, result[id])
+          end
+        end
+        result
+      end
+
+      def project_related(row, members:, precise:)
+        if members
+          result = row.slice("Id", "GroupId", "PersonId", "GroupRoleId", "GroupMemberStatus", "IsArchived")
+          result["GroupRole"] = row["GroupRole"].slice("Id", "Name") if row["GroupRole"].is_a?(Hash)
+          result["Person"] = row["Person"].slice("Id", "Guid", "PrimaryCampusId") if row["Person"].is_a?(Hash)
+        else
+          result = row.slice("Id", "GroupId", "LocationId")
+          if row["GroupLocationTypeValue"].is_a?(Hash)
+            result["GroupLocationTypeValue"] = row["GroupLocationTypeValue"].slice("Value")
+          end
+          if row["Location"].is_a?(Hash)
+            columns = %w[Id IsActive City State Country]
+            columns += %w[Street1 Street2 PostalCode] if precise
+            result["Location"] = row["Location"].slice(*columns)
+          end
+        end
+        result
+      end
+
+      def related_pages(max_pages: MAX_RELATED_PAGES)
         rows = []
-        MAX_RELATED_PAGES.times do |page|
+        max_pages.times do |page|
           batch = yield(page * 100)
           unless batch.is_a?(Array) && batch.size <= 100
             raise ReadClient::ReadError.new("Rock returned invalid related records",

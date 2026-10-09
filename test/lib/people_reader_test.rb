@@ -26,6 +26,14 @@ class PeopleReaderTest < ActiveSupport::TestCase
       callback&.call(:household_members, options.merge(family_id: family_id))
       []
     end
+    client.define_singleton_method(:home_locations_for_families) do |family_ids, **options|
+      callback&.call(:home_locations, options.merge(family_ids: family_ids))
+      []
+    end
+    client.define_singleton_method(:household_members_for_families) do |family_ids, **options|
+      callback&.call(:household_members, options.merge(family_ids: family_ids))
+      []
+    end
     client
   end
 
@@ -177,14 +185,135 @@ class PeopleReaderTest < ActiveSupport::TestCase
     run = PersonRefreshRun.start!(actor: actor)
     calls = []
     client = fake_client
-    client.define_singleton_method(:household_members) do |_, **options|
+    client.define_singleton_method(:household_members_for_families) do |family_ids, **options|
       calls << options
-      options[:offset].zero? ? Array.new(100, {}) : []
+      options[:offset].zero? ? Array.new(100) { {"GroupId" => family_ids.first} } : []
     end
     page = Integrations::Rock::PeopleReader.new(actor: actor, client: client, import_run: run).read_page
     assert_equal 1, page.people.size
     assert_equal [0, 100, 0, 100], calls.map { |call| call[:offset] }
     assert_equal [8, 8, 4, 4], calls.map { |call| call[:campus_ids].size }
     assert_equal Campus.pluck(:rock_id).sort, calls.flat_map { |call| call[:campus_ids] }.uniq.sort
+  end
+
+  test "related families are fetched in bounded batches and empty results are reused across pages" do
+    rows = (0...9).map do |index|
+      @row.merge("Id" => 101 + index,
+        "Guid" => "00000000-0000-4000-8000-#{(101 + index).to_s.rjust(12, "0")}",
+        "PrimaryFamilyId" => 301 + index)
+    end
+    calls = []
+    client = fake_client { |operation, options| calls << [operation, options] }
+    client.define_singleton_method(:people) { |**_| rows }
+    reader = Integrations::Rock::PeopleReader.new(actor: @actor, client: client)
+    first = reader.read_page(limit: 9)
+    assert_equal 9, first.people.size
+    homes = calls.filter_map { |entry| entry.last[:family_ids].size if entry.first == :home_locations }
+    members = calls.filter_map { |entry| entry.last[:family_ids].size if entry.first == :household_members }
+    assert_equal [9], homes
+    assert_equal [4, 4, 1], members
+    calls.clear
+    second = reader.read_page(limit: 9, offset: 9)
+    assert_equal 9, second.people.size
+    assert_empty calls
+  end
+
+  test "batch routing preserves family identity and rejects unexpected groups before caching" do
+    client = fake_client
+    client.define_singleton_method(:home_locations_for_families) do |ids, **_|
+      [{"GroupId" => ids.first + 1, "LocationId" => 500}]
+    end
+    reader = Integrations::Rock::PeopleReader.new(actor: @actor, client: client)
+    assert_raises(Integrations::Rock::ReadClient::ReadError) { reader.read_page }
+    client.define_singleton_method(:home_locations_for_families) { |_, **_| [] }
+    assert_equal "missing", reader.read_page.people.first.home_address[:status]
+  end
+
+  test "cache context changes invalidate private address and household facts" do
+    calls = []
+    client = fake_client { |kind, args| calls << [kind, args] }
+    reader = Integrations::Rock::PeopleReader.new(actor: @actor, client: client)
+    reader.read_page
+    calls.clear
+    @actor.update!(view_locations: true)
+    reader.read_page
+    assert calls.find { |kind, _| kind == :home_locations }.last[:precise]
+    calls.clear
+    DataPolicy.current.update!(history_retention_days: 180)
+    reader.read_page
+    assert_equal 2, calls.count { |kind, _| [:home_locations, :household_members].include?(kind) }
+  end
+
+  test "an incomplete related partition is not cached and must be fetched again on retry" do
+    calls = 0
+    client = fake_client
+    client.define_singleton_method(:household_members_for_families) do |_, **_|
+      calls += 1
+      raise Integrations::Rock::ReadClient::ReadError, "unavailable" if calls == 1
+      []
+    end
+    reader = Integrations::Rock::PeopleReader.new(actor: @actor, client: client)
+    assert_raises(Integrations::Rock::ReadClient::ReadError) { reader.read_page }
+    reader.read_page
+    assert_equal 2, calls
+  end
+
+  test "all related batch pages are routed to the right families despite cache eviction" do
+    rows = [@row, @row.merge("Id" => 102, "Guid" => "00000000-0000-4000-8000-000000000102",
+      "PrimaryFamilyId" => 302)]
+    offsets = []
+    client = fake_client
+    client.define_singleton_method(:people) { |**_| rows }
+    home = ->(group, city) do
+      {"GroupId" => group, "LocationId" => group + 200,
+       "GroupLocationTypeValue" => {"Value" => "Home"},
+       "Location" => {"Id" => group + 200, "City" => city, "IsActive" => true,
+                      "Street1" => "excluded private street", "UnapprovedNote" => "excluded"}}
+    end
+    client.define_singleton_method(:home_locations_for_families) do |ids, **args|
+      offsets << args[:offset]
+      if args[:offset].zero?
+        Array.new(100) { home.call(ids.first, "First Example Town") }
+      else
+        [home.call(ids.last, "Second Example Town")]
+      end
+    end
+    reader = Integrations::Rock::PeopleReader.new(actor: @actor, client: client, cache_limit: 1)
+    page = reader.read_page(limit: 2)
+    assert_equal [0, 100], offsets
+    assert_equal ["First Example Town", "Second Example Town"], page.people.map { |p| p.home_address[:city] }
+    assert_nil page.people.first.home_address[:street1]
+    assert_not_includes page.people.first.to_h.to_json, "UnapprovedNote"
+  end
+
+  test "revocation is rechecked even when all family results are cached" do
+    client = fake_client
+    reader = Integrations::Rock::PeopleReader.new(actor: @actor, client: client)
+    reader.read_page
+    actor = @actor
+    row = @row
+    client.define_singleton_method(:people) do |**_|
+      actor.campus_accesses.destroy_all
+      [row]
+    end
+    assert_raises(Integrations::Rock::PeopleReader::NotAuthorized) { reader.read_page(offset: 25) }
+  end
+
+  test "one owned adapter is retained across pages and closed at the end" do
+    client = fake_client
+    closed = 0
+    client.define_singleton_method(:close) { closed += 1 }
+    constructed = 0
+    Integrations::Rock::ReadClient.stub(:new, -> {
+      constructed += 1
+      client
+    }) do
+      reader = Integrations::Rock::PeopleReader.new(actor: @actor)
+      reader.read_page
+      reader.read_page(offset: 25)
+      assert_equal 1, constructed
+      reader.close
+      assert_equal 1, closed
+    end
   end
 end

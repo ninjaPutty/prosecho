@@ -8,6 +8,7 @@ module Integrations
       def initialize(actor:, client: nil)
         @actor = actor
         @client = client
+        @owns_client = client.nil?
       end
 
       def call
@@ -20,6 +21,8 @@ module Integrations
         Access::Provisioner.new(actor: @actor).import_campuses(records)
       rescue ActiveRecord::RecordInvalid, ActiveRecord::RecordNotUnique
         raise ImportError, "Campus import failed. No changes were applied.", cause: nil
+      ensure
+        @client.close if @owns_client && @client&.respond_to?(:close)
       end
 
       private

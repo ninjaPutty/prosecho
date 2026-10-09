@@ -3,6 +3,36 @@ require "minitest/mock"
 require "net/http"
 
 class RockReadClientTest < ActiveSupport::TestCase
+  class FakeConnection
+    attr_accessor :use_ssl, :open_timeout, :read_timeout, :write_timeout, :max_retries
+    attr_reader :starts, :finishes, :requests
+
+    def initialize(&response)
+      @response = response
+      @starts = @finishes = 0
+      @requests = []
+    end
+
+    def finish
+      @finishes += 1
+      @started = false
+    end
+
+    def request(request)
+      @requests << request
+      @response.call(request)
+    end
+
+    def start
+      @starts += 1
+      @started = true
+    end
+
+    def started?
+      @started
+    end
+  end
+
   def client(transport: ->(_) { {"Id" => 123} })
     Integrations::Rock::ReadClient.new(api_key: "synthetic-test-key", transport: transport)
   end
@@ -47,27 +77,21 @@ class RockReadClientTest < ActiveSupport::TestCase
     end
     redirect = Net::HTTPFound.new("1.1", "302", "Found")
     redirect["Location"] = "https://evil.example.test"
-    connection = Object.new
-    connection.define_singleton_method(:request) { |_| redirect }
-    requests = 0
-    start = ->(*args, **options, &block) do
-      requests += 1
-      block.call(connection)
-    end
-    Net::HTTP.stub(:start, start) do
+    connection = FakeConnection.new { |_| redirect }
+    Net::HTTP.stub(:new, connection) do
       assert_raises(Integrations::Rock::ReadClient::ReadError) do
         Integrations::Rock::ReadClient.new(api_key: "synthetic-test-key").person(123)
       end
     end
-    assert_equal 1, requests
+    assert_equal 1, connection.requests.size
+    assert_equal 1, connection.finishes
   end
 
   test "invalid upstream JSON is not retained in error messages or causes" do
     response = Net::HTTPOK.new("1.1", "200", "OK")
     response.define_singleton_method(:body) { "synthetic-private-payload: not JSON" }
-    connection = Object.new
-    connection.define_singleton_method(:request) { |_| response }
-    Net::HTTP.stub(:start, ->(*args, **options, &block) { block.call(connection) }) do
+    connection = FakeConnection.new { |_| response }
+    Net::HTTP.stub(:new, connection) do
       error = assert_raises(Integrations::Rock::ReadClient::ReadError) do
         Integrations::Rock::ReadClient.new(api_key: "synthetic-test-key").person(123)
       end
@@ -77,7 +101,7 @@ class RockReadClientTest < ActiveSupport::TestCase
   end
 
   test "DNS interruption becomes a sanitized retryable read error" do
-    Net::HTTP.stub(:start, ->(*_, **_) { raise SocketError, "private network detail" }) do
+    Net::HTTP.stub(:new, ->(*_) { raise SocketError, "private network detail" }) do
       error = assert_raises(Integrations::Rock::ReadClient::ReadError) do
         Integrations::Rock::ReadClient.new(api_key: "synthetic-test-key").campuses
       end
@@ -201,6 +225,73 @@ class RockReadClientTest < ActiveSupport::TestCase
     reader = client(transport: ->(_) { flunk "must not send an oversized campus filter" })
     assert_raises(ArgumentError) do
       reader.household_members(301, campus_ids: (100001..100009).to_a)
+    end
+  end
+
+  test "bulk family reads have stable paging and minimal identity-routed projections" do
+    requests = []
+    reader = client(transport: ->(request) { requests << request })
+    reader.home_locations_for_families([302, 301], precise: false)
+    reader.household_members_for_families([302, 301], campus_ids: [100001], offset: 100)
+    home = URI.decode_www_form(requests[0].uri.query).to_h
+    members = URI.decode_www_form(requests[1].uri.query).to_h
+    assert_equal "GroupId,Id", home["$orderby"]
+    assert_includes home["$filter"], "GroupId eq 301 or GroupId eq 302"
+    assert_includes home["$select"].split(","), "GroupId"
+    assert_not_includes home["$select"], "Street1"
+    assert_equal "100", members["$skip"]
+    assert_includes members["$select"].split(","), "GroupId"
+    assert_includes members["$filter"], "Person/PrimaryCampusId eq 100001"
+    assert_not_includes members["$select"], "FirstName"
+    assert_raises(ArgumentError) { reader.home_locations_for_families([]) }
+    assert_raises(ArgumentError) { reader.home_locations_for_families(["1 or true"]) }
+    assert_raises(ArgumentError) do
+      reader.household_members_for_families((301..305).to_a, campus_ids: [100001])
+    end
+  end
+
+  test "named API reads reuse one TLS connection and close explicitly" do
+    response = Net::HTTPOK.new("1.1", "200", "OK")
+    response.define_singleton_method(:body) { "[]" }
+    connection = FakeConnection.new { |_| response }
+    instances = 0
+    Net::HTTP.stub(:new, ->(*_) {
+      instances += 1
+      connection
+    }) do
+      reader = Integrations::Rock::ReadClient.new(api_key: "synthetic-test-key")
+      reader.campuses
+      reader.campuses
+      assert_equal 1, instances
+      assert_equal 1, connection.starts
+      assert connection.use_ssl
+      assert_equal 1, connection.max_retries
+      assert_equal 15, connection.read_timeout
+      reader.close
+      assert_equal 1, connection.finishes
+      reader.campuses
+      assert_equal 2, instances
+      reader.close
+    end
+  end
+
+  test "failed transport is closed and a later caller reconnects without reflecting private errors" do
+    response = Net::HTTPOK.new("1.1", "200", "OK")
+    response.define_singleton_method(:body) { "[]" }
+    attempts = 0
+    connection = FakeConnection.new do |_|
+      attempts += 1
+      raise IOError, "synthetic-private-network-info" if attempts == 1
+      response
+    end
+    Net::HTTP.stub(:new, connection) do
+      reader = Integrations::Rock::ReadClient.new(api_key: "synthetic-test-key")
+      error = assert_raises(Integrations::Rock::ReadClient::ReadError) { reader.campuses }
+      assert_not_includes error.message, "synthetic-private-network-info"
+      assert_equal 1, connection.finishes
+      assert_empty reader.campuses
+      assert_equal 2, connection.starts
+      reader.close
     end
   end
 end

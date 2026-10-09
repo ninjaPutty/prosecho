@@ -14,6 +14,11 @@ Household campus filters are partitioned into groups of at most eight campuses t
 OData expression-node limit. Each partition is paginated independently before member identities are
 combined, so expanding the import to all campuses does not truncate large household rosters.
 
+[Optimized family reads](rock-reader-optimization.md) batch up to twelve Home families or four
+household families, fully paginate results by `GroupId`, reuse HTTPS connections, and retain bounded
+policy/scope-aware family caches across pages. Context changes invalidate cached facts; final
+authorization/policy checks apply equally to cached and newly read data.
+
 For ordinary scoped reads, the actor must be active, unlocked, and have explicit active campus grants.
 Administrator status alone grants no person access. The saved Data decisions must be confirmed and
 valid before any

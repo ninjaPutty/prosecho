@@ -8,6 +8,8 @@ module Integrations
       BASE_URL = "https://rock.chapel.org"
       MAX_PEOPLE_PAGE_SIZE = 500
       MAX_HOUSEHOLD_CAMPUS_SCOPE = 8
+      MAX_HOME_FAMILY_BATCH = 12
+      MAX_MEMBER_FAMILY_BATCH = 4
       class ConfigurationError < StandardError; end
 
       class ReadError < StandardError
@@ -41,9 +43,21 @@ module Integrations
           "$top" => page_limit(limit), "$skip" => page_offset(offset))
       end
 
+      def close
+        http = @http
+        @http = nil
+        http.finish if http&.started?
+      rescue IOError, SystemCallError, Timeout::Error, OpenSSL::SSL::SSLError
+        nil
+      end
+
       def home_locations(family_id, limit: 100, offset: 0, precise: true)
+        home_locations_for_families([family_id], limit: limit, offset: offset, precise: precise)
+      end
+
+      def home_locations_for_families(family_ids, limit: 100, offset: 0, precise: true)
         raise ArgumentError, "Invalid address permission" unless [true, false].include?(precise)
-        columns = %w[Id LocationId GroupLocationTypeValue/Value Location/Id Location/IsActive
+        columns = %w[Id GroupId LocationId GroupLocationTypeValue/Value Location/Id Location/IsActive
           Location/City Location/State Location/Country]
         if precise
           # Chapel's v1 OData coordinate projection returns HTTP 500 even when
@@ -51,28 +65,36 @@ module Integrations
           # coordinates need a separately verified map-phase read path.
           columns += %w[Location/Street1 Location/Street2 Location/PostalCode]
         end
-        get_resource("GroupLocations", "$filter" => "GroupId eq #{identifier(family_id)} " \
-          "and GroupLocationTypeValue/Value eq 'Home'", "$orderby" => "Id",
+        get_resource("GroupLocations", "$filter" => "#{family_filter(family_ids, maximum: MAX_HOME_FAMILY_BATCH)} " \
+          "and GroupLocationTypeValue/Value eq 'Home'", "$orderby" => "GroupId,Id",
           "$select" => columns.join(","),
           "$expand" => "Location,GroupLocationTypeValue",
           "$top" => page_limit(limit), "$skip" => page_offset(offset))
       end
 
       def household_members(family_id, limit: 100, offset: 0, campus_ids: nil)
+        if campus_ids
+          return household_members_for_families([family_id], limit: limit,
+            offset: offset, campus_ids: campus_ids)
+        end
         # Rock v1 exposes the enum as Edm.String to OData but serializes it as
         # an integer in JSON. Numeric `eq 1` fails; the named string is accepted.
         filter = "GroupId eq #{identifier(family_id)} and IsArchived eq false " \
           "and GroupMemberStatus eq 'Active'"
         parameters = {"$filter" => filter, "$orderby" => "Id", "$expand" => "GroupRole",
                       "$top" => page_limit(limit), "$skip" => page_offset(offset)}
-        if campus_ids
-          parameters["$filter"] += " and #{campus_filter(campus_ids, prefix: "Person/",
-            maximum: MAX_HOUSEHOLD_CAMPUS_SCOPE)}"
-          parameters["$expand"] = "GroupRole,Person"
-          parameters["$select"] = %w[Id PersonId GroupRoleId GroupMemberStatus IsArchived
-            GroupRole/Id GroupRole/Name Person/Id Person/Guid Person/PrimaryCampusId].join(",")
-        end
         get_resource("GroupMembers", parameters)
+      end
+
+      def household_members_for_families(family_ids, campus_ids:, limit: 100, offset: 0)
+        filter = "#{family_filter(family_ids, maximum: MAX_MEMBER_FAMILY_BATCH)} " \
+          "and IsArchived eq false and GroupMemberStatus eq 'Active' and " \
+          "#{campus_filter(campus_ids, prefix: "Person/", maximum: MAX_HOUSEHOLD_CAMPUS_SCOPE)}"
+        get_resource("GroupMembers", "$filter" => filter, "$orderby" => "GroupId,Id",
+          "$expand" => "GroupRole,Person",
+          "$select" => %w[Id GroupId PersonId GroupRoleId GroupMemberStatus IsArchived
+            GroupRole/Id GroupRole/Name Person/Id Person/Guid Person/PrimaryCampusId].join(","),
+          "$top" => page_limit(limit), "$skip" => page_offset(offset))
       end
 
       def inspect
@@ -157,6 +179,26 @@ module Integrations
         "(#{values.map { |id| "#{prefix}PrimaryCampusId eq #{id}" }.join(" or ")})"
       end
 
+      def connection
+        @http ||= Net::HTTP.new(URI(@base_url).host, 443).tap do |http|
+          http.use_ssl = true
+          http.open_timeout = 5
+          http.read_timeout = 15
+          http.write_timeout = 5
+          # Only fixed named GETs use this connection. Net::HTTP reconnects once
+          # for an idle peer disconnect; HTTP error statuses are never retried here.
+          http.max_retries = 1
+        end
+      end
+
+      def family_filter(ids, maximum:)
+        unless ids.is_a?(Array) && ids.any? && ids.size <= maximum
+          raise ArgumentError, "Explicit family scope of 1-#{maximum} families is required"
+        end
+        values = ids.map { |id| identifier(id) }.uniq.sort
+        "(#{values.map { |id| "GroupId eq #{id}" }.join(" or ")})"
+      end
+
       # Named methods construct only these known read paths. Rock also has GET
       # actions that mutate, so rejecting HTTP mutation verbs alone is insufficient.
       def get_resource(resource, parameters = {})
@@ -192,8 +234,9 @@ module Integrations
       end
 
       def perform_get(request)
-        response = Net::HTTP.start(request.uri.host, request.uri.port, use_ssl: true,
-          open_timeout: 5, read_timeout: 15, write_timeout: 5) { |http| http.request(request) }
+        http = connection
+        http.start unless http.started?
+        response = http.request(request)
         # Never follow redirects or reflect an upstream body/URL in exception messages.
         unless response.is_a?(Net::HTTPSuccess)
           raise ReadError.new("Rock read failed (HTTP #{response.code})",
@@ -202,9 +245,14 @@ module Integrations
 
         JSON.parse(response.body)
       rescue JSON::ParserError
+        close
         raise ReadError.new("Rock returned an invalid JSON response", reason: "invalid_json"), cause: nil
       rescue SocketError, IOError, SystemCallError, Timeout::Error, OpenSSL::SSL::SSLError
+        close
         raise ReadError.new("Rock read could not be completed", reason: "network_error"), cause: nil
+      rescue ReadError
+        close
+        raise
       end
     end
   end

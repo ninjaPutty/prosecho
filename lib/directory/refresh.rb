@@ -97,6 +97,8 @@ module Directory
     rescue ActiveRecord::RecordNotUnique
       code = (@phase == "publish") ? "publication_identity_conflict" : "staging_identity_conflict"
       fail!(code, "rock_id" => @publishing_rock_id)
+    ensure
+      reader.close if reader&.respond_to?(:close)
     end
 
     def fail!(code, details = {})
