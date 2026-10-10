@@ -22,24 +22,26 @@ module Components
               end
             end
             if @actor.administrator? && @query.confirmed?
-              post_form(action: view_context.workspace_refresh_path) do
-                if @run&.resumable?
-                  input(type: "hidden", name: "resume_run_id", value: @run.id)
+              div(class: "flex flex-wrap items-center justify-end gap-3") do
+                p(class: "text-xs text-stone-500") do
+                  plain "Refresh imports every campus, regardless of your current filters."
                 end
-                button(type: "submit", class: BUTTON) do
-                  icon("refresh-cw")
-                  label = if @run&.resumable?
-                    "Retry from saved checkpoint"
-                  elsif @run&.active?
-                    "Resume/check refresh"
-                  else
-                    "Refresh people from Rock"
+                post_form(action: view_context.workspace_refresh_path) do
+                  if @run&.resumable?
+                    input(type: "hidden", name: "resume_run_id", value: @run.id)
                   end
-                  plain label
+                  button(type: "submit", class: BUTTON) do
+                    icon("refresh-cw")
+                    label = if @run&.resumable?
+                      "Retry from saved checkpoint"
+                    elsif @run&.active?
+                      "Resume/check refresh"
+                    else
+                      "Refresh people from Rock"
+                    end
+                    plain label
+                  end
                 end
-              end
-              p(class: "mt-2 text-xs text-stone-500") do
-                plain "Refresh imports every campus, regardless of your current filters."
               end
             end
           end

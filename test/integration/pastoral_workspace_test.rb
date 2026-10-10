@@ -217,6 +217,20 @@ class PastoralWorkspaceTest < ActionDispatch::IntegrationTest
     assert_response :forbidden
   end
 
+  test "administrator refresh controls are grouped at the workspace's right edge" do
+    administrator = users(:administrator)
+    CampusAccess.create!(user: administrator, campus: campuses(:north))
+    sign_in administrator
+
+    get dashboard_path
+
+    assert_response :success
+    assert_select "div.justify-end", 1 do
+      assert_select "p", "Refresh imports every campus, regardless of your current filters."
+      assert_select "form[action='#{workspace_refresh_path}']"
+    end
+  end
+
   test "administrator without viewing grants can refresh all campuses from administration" do
     sign_in users(:administrator)
     assert_empty users(:administrator).campuses

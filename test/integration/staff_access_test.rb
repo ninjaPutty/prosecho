@@ -30,6 +30,17 @@ class StaffAccessTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "administrators sign in to the pastoral workspace" do
+    administrator = users(:administrator)
+    administrator.update!(password: "a unique long passphrase")
+
+    post user_session_path, params: {user: {
+      email: administrator.email, password: "a unique long passphrase"
+    }}
+
+    assert_redirected_to dashboard_path
+  end
+
   test "dashboard denies a user with no campus grant and records no personal payload" do
     sign_in users(:administrator)
     assert_difference "AccessEvent.count", 1 do
