@@ -22,7 +22,7 @@ class ScheduledPersonRefreshJob < ApplicationJob
         return if schedule.due_at.future?
         PersonRefreshRun.enqueue!(actor: actor)
         schedule.record_status!(last_enqueued_at: Time.current,
-          next_due_at: schedule.interval_hours.hours.from_now, last_error_code: nil)
+          next_due_at: schedule.next_occurrence, last_error_code: nil)
       end
     end
   rescue PersonRefreshRun::AlreadyRunning

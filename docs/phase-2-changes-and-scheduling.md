@@ -3,20 +3,20 @@
 ## Schedule
 
 Administrators configure automatic all-campus refreshes at `/admin/sync_schedule`, linked from
-administration. The default cadence is **24 hours**, editable from 1 to 168 hours. The configuration
-starts disabled; saving it enabled records the current administrator as the import operator.
+administration. The daily GMT time defaults to **00:00**. The configuration starts disabled; saving
+it enabled records the current administrator as the import operator.
 
 Solid Queue checks the persisted schedule every minute. The dispatcher itself performs no Rock
-requests; it queues the existing directory job when due. A completed import gets a full configured
-interval before the next automatic import, including when the preceding import took longer than
-the interval. Existing work is never overlapped. A failed all-campus run pauses automatic replacement
-until an administrator reviews/retries it or completes a new manual refresh.
+requests; it queues the existing directory job when the selected GMT time is due. A refresh that
+finishes after its scheduled time waits for the next day's occurrence. Existing work is never
+overlapped. A failed all-campus run pauses automatic replacement until an administrator
+reviews/retries it or completes a new manual refresh.
 
 The operator must remain active, unlocked, and an administrator. Confirmed data decisions, the
 runtime Rock key, and the campus catalog are required. Viewing grants do not restrict ingestion.
 The campus catalog remains separately administered: fetch it when Rock adds campuses. Schedule
 health, next due time, last check, and safe blocker codes appear in administration; a last successful
-refresh older than twice the configured interval is stale, including while another run is processing.
+refresh older than two days is stale, including while another run is processing.
 
 Disabling the schedule prevents new automatic imports but does not cancel an already running import.
 The local process-only Rock key still needs to be supplied after a server/container restart.

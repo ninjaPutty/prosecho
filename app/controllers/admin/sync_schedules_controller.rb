@@ -9,9 +9,9 @@ module Admin
       if schedule.persisted? && params.require(:sync_schedule)[:revision] != schedule.lock_version.to_s
         return render Components::Admin::SyncScheduleForm.new(schedule: schedule), status: :conflict
       end
-      schedule.assign_attributes(params.require(:sync_schedule).permit(:enabled, :interval_hours))
+      schedule.assign_attributes(params.require(:sync_schedule).permit(:enabled, :scheduled_at))
       schedule.administrator = current_user
-      schedule.next_due_at = Time.current
+      schedule.next_due_at = schedule.next_occurrence if schedule.scheduled_at
       schedule.last_error_code = nil
       SyncSchedule.transaction(requires_new: true) do
         schedule.save!

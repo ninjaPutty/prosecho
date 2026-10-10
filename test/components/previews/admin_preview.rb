@@ -1,6 +1,6 @@
 class AdminPreview < Lookbook::Preview
   def scheduled_refresh
-    schedule = SyncSchedule.new(enabled: true, interval_hours: 24)
+    schedule = SyncSchedule.new(enabled: true, scheduled_at: "12:00")
     schedule.define_singleton_method(:health) { "healthy" }
     schedule.define_singleton_method(:due_at) { Time.utc(2026, 10, 9, 12) }
     render Components::Admin::SyncScheduleForm.new(schedule: schedule)

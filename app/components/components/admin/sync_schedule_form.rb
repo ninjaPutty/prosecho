@@ -8,7 +8,7 @@ module Components
       def view_template
         page("Scheduled people refresh") do
           p(class: "mb-6 text-stone-600") do
-            plain "Refresh all catalog campuses automatically. The default is every 24 hours."
+            plain "Refresh all catalog campuses automatically once a day at the selected GMT time."
             plain " The saved administrator authorizes imports, independently of viewing grants."
           end
           errors_for(@schedule)
@@ -16,14 +16,14 @@ module Components
             input(type: "hidden", name: "sync_schedule[revision]", value: @schedule.lock_version)
             toggle(label: "Enable scheduled refreshes", name: "sync_schedule[enabled]",
               checked: @schedule.enabled?)
-            field(label: "Hours between successful refreshes (1-168)",
-              name: "sync_schedule[interval_hours]", value: @schedule.interval_hours, type: "number")
+            field(label: "Daily refresh time (GMT)", name: "sync_schedule[scheduled_at]",
+              value: @schedule.scheduled_at&.strftime("%H:%M"), type: "time")
             button(type: "submit", class: BUTTON) { "Save schedule" }
           end
           p(class: "mt-6 text-sm text-stone-600") { "Schedule health: #{@schedule.health.humanize}." }
-          if @schedule.enabled?
+          if @schedule.enabled? && @schedule.scheduled_at
             p(class: "mt-3 text-sm text-stone-600") do
-              plain "Next due: #{@schedule.due_at.in_time_zone.strftime("%b %-d, %Y %H:%M %Z")}."
+              plain "Next due: #{@schedule.due_at.utc.strftime("%b %-d, %Y %H:%M GMT")}."
             end
           end
           p(class: "mt-3 text-sm text-stone-600") do

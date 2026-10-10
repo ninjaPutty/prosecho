@@ -2,6 +2,7 @@ class SyncSchedule < ApplicationRecord
   belongs_to :administrator, class_name: "User"
   validates :enabled, inclusion: {in: [true, false]}
   validates :interval_hours, numericality: {only_integer: true, greater_than: 0, less_than_or_equal_to: 168}
+  validates :scheduled_at, presence: true
   validates :slot, inclusion: {in: [1]}
 
   def self.current
@@ -10,7 +11,15 @@ class SyncSchedule < ApplicationRecord
 
   def due_at
     completed = PersonRefreshRun.where(all_campuses: true, status: "succeeded").maximum(:finished_at)
-    [next_due_at || Time.current, completed && completed + interval_hours.hours].compact.max
+    [next_due_at, next_occurrence(inclusive: true), completed && next_occurrence(completed)].compact.max
+  end
+
+  def next_occurrence(from = Time.current, inclusive: false)
+    scheduled = Time.utc(from.year, from.month, from.day, scheduled_at.hour, scheduled_at.min)
+    return scheduled if inclusive && scheduled >= from
+    return scheduled if !inclusive && scheduled > from
+
+    scheduled + 1.day
   end
 
   def health
@@ -18,10 +27,10 @@ class SyncSchedule < ApplicationRecord
     return "blocked" if last_error_code && last_error_code != "refresh_in_progress"
     completed = PersonRefreshRun.where(all_campuses: true, status: "succeeded").maximum(:finished_at)
     if PersonRefreshRun.active.exists?
-      return (completed && completed < (interval_hours * 2).hours.ago) ? "running_stale" : "running"
+      return (completed && completed < 2.days.ago) ? "running_stale" : "running"
     end
     return "baseline_pending" unless completed
-    (completed < (interval_hours * 2).hours.ago) ? "stale" : "healthy"
+    (completed < 2.days.ago) ? "stale" : "healthy"
   end
 
   def record_status!(**attributes)

@@ -18,8 +18,8 @@ It imports every campus in the catalog, regardless of directory filters or the a
 viewing grants. Staff viewing access remains campus-scoped. The same all-campus entry point is
 used by scheduled refreshes.
 
-[Phase 2](docs/phase-2-changes-and-scheduling.md) adds administrator-managed scheduled refreshes
-(24-hour default) and a permission-scoped Changes feed. Configure the cadence and enable it at
+[Phase 2](docs/phase-2-changes-and-scheduling.md) adds administrator-managed daily refreshes at a
+selected GMT time and a permission-scoped Changes feed. Configure the time and enable it at
 `/admin/sync_schedule`. The first successful comparison import is a quiet baseline; later complete
 imports report discovered status, address, and household differences. Staff need history permission
 to use the feed and its discovery-time filters.

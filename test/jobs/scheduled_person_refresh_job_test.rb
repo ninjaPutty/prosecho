@@ -12,15 +12,26 @@ class ScheduledPersonRefreshJobTest < ActiveSupport::TestCase
       next_due_at: 1.minute.ago)
   end
 
-  test "default cadence is 24 hours and the dispatcher queues at most one all-campus run" do
-    assert_equal 24, @schedule.interval_hours
-    settings = Pastoral::Configuration.load(environment: {"ROCK_API_KEY" => "synthetic-test-key"})
-    Pastoral::Configuration.stub(:load, settings) do
-      assert_enqueued_with(job: PersonRefreshJob) { ScheduledPersonRefreshJob.perform_now }
-      assert_equal 1, PersonRefreshRun.active.count
-      assert PersonRefreshRun.active.first.all_campuses?
-      assert @schedule.reload.next_due_at >= 23.hours.from_now
-      assert_no_enqueued_jobs { ScheduledPersonRefreshJob.perform_now }
+  test "dispatcher queues one all-campus run at the selected GMT time" do
+    @schedule.update!(scheduled_at: "09:30", next_due_at: nil)
+    travel_to Time.utc(2026, 10, 10, 9, 30) do
+      settings = Pastoral::Configuration.load(environment: {"ROCK_API_KEY" => "synthetic-test-key"})
+      Pastoral::Configuration.stub(:load, settings) do
+        assert_enqueued_with(job: PersonRefreshJob) { ScheduledPersonRefreshJob.perform_now }
+        assert_equal 1, PersonRefreshRun.active.count
+        assert PersonRefreshRun.active.first.all_campuses?
+        assert_equal Time.utc(2026, 10, 11, 9, 30), @schedule.reload.next_due_at
+        assert_no_enqueued_jobs { ScheduledPersonRefreshJob.perform_now }
+      end
+    end
+  end
+
+  test "the next due time is the selected GMT time after a completed refresh" do
+    @schedule.update!(scheduled_at: "09:30", next_due_at: nil)
+    run = PersonRefreshRun.start!(actor: users(:administrator))
+    run.update!(status: "succeeded", finished_at: Time.utc(2026, 10, 10, 10))
+    travel_to Time.utc(2026, 10, 10, 10, 15) do
+      assert_equal Time.utc(2026, 10, 11, 9, 30), @schedule.due_at
     end
   end
 
@@ -49,16 +60,15 @@ class ScheduledPersonRefreshJobTest < ActiveSupport::TestCase
     assert_equal 1, PersonRefreshRun.count
   end
 
-  test "a long successful import gets a full cadence before the next import and clears old blockers" do
+  test "a completed import clears old blockers without queuing before the next GMT time" do
     run = PersonRefreshRun.start!(actor: users(:administrator))
     run.update!(status: "succeeded", finished_at: Time.current)
-    @schedule.update!(last_error_code: "failed_refresh_needs_review")
+    @schedule.update!(scheduled_at: Time.current.strftime("%H:%M"), last_error_code: "failed_refresh_needs_review")
     settings = Pastoral::Configuration.load(environment: {"ROCK_API_KEY" => "synthetic-test-key"})
     Pastoral::Configuration.stub(:load, settings) do
       assert_no_enqueued_jobs { ScheduledPersonRefreshJob.perform_now }
     end
     assert_nil @schedule.reload.last_error_code
-    assert @schedule.due_at >= 23.hours.from_now
     assert_equal "healthy", @schedule.health
   end
 
