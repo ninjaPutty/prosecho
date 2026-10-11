@@ -97,7 +97,7 @@ must support `--in-pod false`. Compose uses project `prosecho`; if invoking it
 manually, always pass `-p prosecho -f .devcontainer/compose.yaml -f
 .devcontainer/compose.runtime.yaml`. The app is bound to host
 `127.0.0.1:3100` (container port 3000). Development mounts this repository,
-optional sibling logs, persistent OpenCode data/cache, and the host OpenCode
+optional sibling logs and the host OpenCode
 secrets file when present (see [Agent Tools](#agent-tools)). No complete host home
 or container-runtime socket is mounted. VS Code-managed SSH agent forwarding is
 enabled by default: trusted container processes can sign with every loaded host
@@ -207,7 +207,7 @@ pin. The optional deployment credential overlay grants `app` access to runtime
 secrets and production Docker through SSH as documented in
 [Deployment](docs/deployment.md). Rebuild to acquire these image additions.
 
-The development image includes pinned `opencode` 1.18.33, `codex` 0.159.1,
+The development image includes pinned `opencode` 2.0.26 (via `@opencode/cli`), `codex` 0.159.1,
 and `claude` 2.1.285, available to the unprivileged `vscode` user. Run
 `verify-ai-clis` to check their versions. Rebuild the image to install them;
 the already-running container does not acquire tools from a changed Dockerfile.
@@ -240,45 +240,23 @@ For a narrower Drive-only alternative, set `PROSECHO_AGENT_SECRETS_FILE` to an
 existing dedicated file outside the checkout and add
 `.devcontainer/compose.agents.yaml` after the runtime overlay; it replaces the
 mount at the same target. Codex and Claude login/state remain separate and are
-not mounted; OpenCode's shared data includes authentication as described below.
+not mounted; OpenCode state is also container-local as described below.
 Without approved Drive access, the launcher reports a blocker instead of
 dumping secrets or bypassing the guidance.
 
 ### OpenCode persistence
 
-Host initialization creates and mounts these two directories read-write on `app`,
-using the same host sources as Mixdown and Rhythm:
+OpenCode sessions, authentication, and cache remain container-local. Host
+initialization does not create or mount `${HOME}/.local/share/opencode` or
+`${HOME}/.cache/opencode`. Existing host state is left untouched; no state is
+cleared, copied, or migrated. Container-local sessions do not survive container
+recreation unless separately preserved/exported.
 
-| Host source                     | Container target                     | Purpose                     |
-| ------------------------------- | ------------------------------------ | --------------------------- |
-| `${HOME}/.local/share/opencode` | `/home/vscode/.local/share/opencode` | Sessions and authentication |
-| `${HOME}/.cache/opencode`       | `/home/vscode/.cache/opencode`       | Model and package cache     |
-
-The generated runtime overlay contains one volumes list for state and optional
-logs, SSH, and secrets. State binds use `create_host_path: false`; initialization
-creates only the declared state sources, not missing optional logs or secrets.
-Existing state is not cleared, copied, or re-owned. The image pre-creates
-`vscode`-owned target parents. The whole host `.config/opencode` directory is not
-shared, even read-only: session persistence does not require host provider/MCP
-configuration. Unlike Mixdown/Rhythm, `.opencode` is not mounted because the image
-installs the binary at `/usr/local/bin/opencode` and this workflow does not use
-that runtime directory.
-
-This user-approved session-sharing convenience also exposes authentication such
-as `auth.json` within the writable data directory. Trusted container processes
-can read, change, or delete host sessions and authentication, including state used
-by other projects, and use provider credentials as the host user within their
-scopes. Cache contents can also be modified. The separate `secrets.env` mount
-remains read-only with no overlapping config-directory bind. Read-only secrets
-do not prevent credential use; external mutations still require approval. For
-untrusted work, use a separate lower-privilege host home/state or deliberately
-omit these state binds from the generated overlay before creating the container.
-
-Sessions written to the shared data directory at the stable `/prosecho` workspace
-survive subsequent rebuilds/recreations. Host-checkout sessions may not appear in
-the container's default list because its absolute workspace path differs from
-`~/Church/prosecho/src`; use session tooling to select the relevant path/session.
-No host-path symlink or automatic session migration is performed.
+The generated runtime overlay contains one volumes list for optional logs, SSH,
+and secrets, or an empty list when none are available. The separate `secrets.env`
+mount remains read-only; the whole host `.config/opencode` directory and
+`.opencode` runtime directory are not mounted. OpenCode remains installed in the
+image. Read-only secrets still allow credential use as described above.
 
 Rerun `DEVCONTAINER_RUNTIME=podman sh .devcontainer/initialize.sh` from the host
 repository root (use `docker` or `orbstack` for those runtimes), then rebuild and
@@ -312,7 +290,7 @@ Ruby checks but Rails tests were blocked because `postgres` did not resolve;
 no database was started or repaired. Read-only inspection found zero sessions
 in the container-private database and no active host data/cache binds. No secrets
 content was printed, image rebuilt, container restarted/recreated, or live
-persistence claimed. Apply the new mounts by rebuilding/recreating when ready.
+persistence claimed. These historical state mounts have since been removed.
 
 On 2026-10-07, the workspace generation regressions passed in the 18-test host
 initialization suite: Prosecho always present, logs present/absent/non-directory,

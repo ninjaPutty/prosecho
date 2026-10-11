@@ -75,19 +75,11 @@ if [ "$ssh_available" = true ]; then
     '      SSH_AUTH_SOCK: /run/prosecho-dev-agent.sock' >> .devcontainer/compose.runtime.yaml
 fi
 
-printf '%s\n' '    volumes:' >> .devcontainer/compose.runtime.yaml
-# Only declared persistent state is created; optional logs/secrets stay optional.
-for path in .cache/opencode .local/share/opencode; do
-  mkdir -p "$HOME/$path"
-  source=$(printf '%s' "$HOME/$path" | sed -e "s/'/''/g" -e 's/\$/$$/g')
-  printf '%s\n' \
-    '      - type: bind' \
-    "        source: '$source'" \
-    "        target: /home/vscode/$path" \
-    '        read_only: false' \
-    '        bind:' \
-    '          create_host_path: false' >> .devcontainer/compose.runtime.yaml
-done
+if [ "$logs_available" = true ] || [ "$ssh_available" = true ] || [ "$secrets_available" = true ]; then
+  printf '%s\n' '    volumes:' >> .devcontainer/compose.runtime.yaml
+else
+  printf '%s\n' '    volumes: []' >> .devcontainer/compose.runtime.yaml
+fi
 
 if [ "$logs_available" = true ]; then
   # Compose resolves sources relative to the base file in .devcontainer/.

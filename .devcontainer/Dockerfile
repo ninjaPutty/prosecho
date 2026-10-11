@@ -22,7 +22,7 @@ RUN chmod 600 /home/vscode/.ssh/config
 RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && \
   ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx && \
   npm install --global --prefix /usr/local --include=optional --engine-strict \
-    opencode-ai@1.18.33 @openai/codex@0.159.1 @anthropic-ai/claude-code@2.1.285 && \
+    @opencode/cli@2.0.26 @openai/codex@0.159.1 @anthropic-ai/claude-code@2.1.285 && \
   npm cache clean --force && chmod 755 /usr/local/bin/verify-ai-clis && \
   install -d -m 700 -o vscode -g 100 /home/vscode/.config/opencode \
     /home/vscode/.cache /home/vscode/.local /home/vscode/.local/share

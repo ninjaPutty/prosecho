@@ -10,7 +10,7 @@ trap 'rm -rf "$HOME"' EXIT HUP INT TERM
 
 test "$(id -un)" = vscode
 test "$(node --version)" = v22.23.3
-test "$(opencode --version)" = 1.18.33
+test "$(opencode --version)" = 'opencode v2.0.26'
 test "$(codex --version)" = 'codex-cli 0.159.1'
 test "$(claude --version)" = '2.1.285 (Claude Code)'
 node --version

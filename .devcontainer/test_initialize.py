@@ -1,4 +1,4 @@
-"""Host-side tests for runtime selection and state/optional mounts; no engine is contacted."""
+"""Host-side tests for runtime selection and optional mounts; no engine is contacted."""
 
 from pathlib import Path
 import json
@@ -17,12 +17,18 @@ STATE_PATHS = (".cache/opencode", ".local/share/opencode")
 class InitializeTest(unittest.TestCase):
     def initialize(self, engines, override=None, logs=False, remove_logs=False,
                    agent=None, socket_override=False, secrets=None, remove_secrets=False,
-                     special_home=False, logs_file=False, existing_state=False):
+                      special_home=False, logs_file=False, existing_state=False,
+                      stale_state_mounts=False):
         with tempfile.TemporaryDirectory() as directory:
             parent = Path(directory) / "project with spaces"
             root = parent / "src"
             root.mkdir(parents=True)
             (root / ".devcontainer").mkdir()
+            if stale_state_mounts:
+                (root / ".devcontainer/compose.runtime.yaml").write_text(
+                    "services:\n  app:\n    volumes:\n" + "".join(
+                        f"      - ${{HOME}}/{path}:/home/vscode/{path}\n"
+                        for path in STATE_PATHS))
             log_dir = parent / "work logs"
             if logs:
                 log_dir.mkdir()
@@ -116,21 +122,10 @@ class InitializeTest(unittest.TestCase):
             if result.returncode == 0:
                 for path in STATE_PATHS:
                     state = home / path
-                    self.assertTrue(state.is_dir())
-                    source = str(state).replace("'", "''").replace("$", "$$")
-                    mount = (
-                        "      - type: bind\n"
-                        f"        source: '{source}'\n"
-                        f"        target: /home/vscode/{path}\n"
-                        "        read_only: false\n"
-                        "        bind:\n"
-                        "          create_host_path: false\n"
-                    )
-                    self.assertEqual(overlay.read_text().count(mount), 1)
+                    self.assertEqual(state.exists(), existing_state)
+                    self.assertNotIn(f"target: /home/vscode/{path}", overlay.read_text())
                     if existing_state:
                         self.assertEqual((state / "preserved").read_text(), "existing state\n")
-                    else:
-                        self.assertEqual(list(state.iterdir()), [])
                 self.assertFalse((home / ".opencode").exists())
                 self.assertEqual(overlay.read_text().count("    volumes:"), 1)
                 self.assertNotIn("target: /home/vscode/.config/opencode\n", overlay.read_text())
@@ -152,7 +147,7 @@ class InitializeTest(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertIn("Optional OpenCode secrets unavailable", result.stderr)
                     self.assertNotIn("secrets.env", overlay)
-                    self.assertIn("volumes:", overlay)
+                    self.assertIn("volumes: []", overlay)
                     self.assertNotIn("app: {}", overlay)
 
     def test_secrets_file_mount_with_other_optional_mounts(self):
@@ -173,7 +168,7 @@ class InitializeTest(unittest.TestCase):
                             "          create_host_path: false\n", overlay)
                         self.assertEqual(overlay.count("    volumes:"), 1)
                         self.assertEqual(overlay.count("      - type: bind"),
-                                          3 + int(logs) + int(agent == "socket"))
+                                          1 + int(logs) + int(agent == "socket"))
                         self.assertNotIn("app: {}", overlay)
 
     def test_secrets_home_path_is_escaped(self):
@@ -285,12 +280,13 @@ class InitializeTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("keep-id:gid=100", overlay)
 
-    def test_opencode_state_is_created_and_preserved(self):
+    def test_opencode_state_is_not_created_or_mounted_and_existing_data_is_preserved(self):
         for runtime in ("docker", "orbstack", "podman"):
             for existing_state in (False, True):
                 with self.subTest(runtime=runtime, existing_state=existing_state):
                     result, _ = self.initialize(
-                        {}, runtime, special_home=True, existing_state=existing_state)
+                        {}, runtime, special_home=True, existing_state=existing_state,
+                        stale_state_mounts=True)
                     self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_optional_logs_mount_is_outside_workspace(self):
@@ -347,7 +343,7 @@ class InitializeTest(unittest.TestCase):
                     socket_override=True, secrets="file")
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertNotIn("work-logs", overlay)
-                self.assertEqual(overlay.count("      - type: bind"), 4)
+                self.assertEqual(overlay.count("      - type: bind"), 2)
                 self.assertIn("target: /run/prosecho-dev-agent.sock", overlay)
                 self.assertIn("target: /home/vscode/.config/opencode/secrets.env", overlay)
 
