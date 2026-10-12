@@ -13,8 +13,8 @@ class ScheduledPersonRefreshJobTest < ActiveSupport::TestCase
   end
 
   test "dispatcher queues one all-campus run at the selected GMT time" do
-    @schedule.update!(scheduled_at: "09:30", next_due_at: nil)
-    travel_to Time.utc(2026, 10, 10, 9, 30) do
+    @schedule.update!(scheduled_at: "09:30", next_due_at: Time.utc(2026, 10, 10, 9, 30))
+    travel_to Time.utc(2026, 10, 10, 9, 31) do
       settings = Pastoral::Configuration.load(environment: {"ROCK_API_KEY" => "synthetic-test-key"})
       Pastoral::Configuration.stub(:load, settings) do
         assert_enqueued_with(job: PersonRefreshJob) { ScheduledPersonRefreshJob.perform_now }

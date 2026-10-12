@@ -11,7 +11,8 @@ class SyncSchedule < ApplicationRecord
 
   def due_at
     completed = PersonRefreshRun.where(all_campuses: true, status: "succeeded").maximum(:finished_at)
-    [next_due_at, next_occurrence(inclusive: true), completed && next_occurrence(completed)].compact.max
+    scheduled = next_due_at || next_occurrence(inclusive: true)
+    [scheduled, completed && next_occurrence(completed)].compact.max
   end
 
   def next_occurrence(from = Time.current, inclusive: false)
