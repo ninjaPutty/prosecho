@@ -7,6 +7,7 @@ module Integrations
         "birth_date" => %w[BirthDay BirthMonth BirthYear],
         "connection_status" => %w[ConnectionStatusValueId
           ConnectionStatusValue/Id ConnectionStatusValue/Value],
+        "email" => %w[Email],
         "first_name" => %w[FirstName],
         "home_address" => %w[PrimaryFamilyId],
         "household" => %w[PrimaryFamilyId],

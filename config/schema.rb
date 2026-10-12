@@ -10,9 +10,10 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_12_000002) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_12_000003) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
+  enable_extension "pg_trgm"
 
   create_table "access_events", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
     t.uuid "actor_id", null: false
@@ -42,6 +43,54 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_12_000002) do
     t.datetime "updated_at", null: false
     t.index ["parent_id"], name: "index_campuses_on_parent_id"
     t.index ["rock_id"], name: "index_campuses_on_rock_id", unique: true
+  end
+
+  create_table "church_next_accounts", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.string "email", null: false
+    t.boolean "email_verified", default: false, null: false
+    t.string "external_user_id", null: false
+    t.string "first_name", null: false
+    t.string "last_name", null: false
+    t.datetime "linked_at"
+    t.uuid "person_profile_id"
+    t.boolean "photo_available", default: false, null: false
+    t.string "status", default: "pending", null: false
+    t.datetime "updated_at", null: false
+    t.index ["external_user_id"], name: "index_church_next_accounts_on_external_user_id", unique: true
+    t.index ["person_profile_id"], name: "index_church_next_accounts_on_person_profile_id"
+  end
+
+  create_table "church_next_candidates", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.uuid "church_next_account_id", null: false
+    t.datetime "created_at", null: false
+    t.datetime "decided_at"
+    t.uuid "person_profile_id"
+    t.string "policy_revision", null: false
+    t.string "reason", null: false
+    t.uuid "reviewed_by_id"
+    t.string "rock_guid", null: false
+    t.integer "score", null: false
+    t.string "status", default: "pending", null: false
+    t.datetime "updated_at", null: false
+    t.index ["church_next_account_id", "rock_guid"], name: "idx_on_church_next_account_id_rock_guid_be0c6b7a43", unique: true
+    t.index ["church_next_account_id"], name: "index_church_next_candidates_on_church_next_account_id"
+    t.index ["person_profile_id"], name: "index_church_next_candidates_on_person_profile_id"
+    t.index ["reviewed_by_id"], name: "index_church_next_candidates_on_reviewed_by_id"
+  end
+
+  create_table "church_next_link_deliveries", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.integer "attempts", default: 0, null: false
+    t.uuid "church_next_account_id", null: false
+    t.datetime "created_at", null: false
+    t.datetime "delivered_at"
+    t.string "last_error_code"
+    t.datetime "next_attempt_at", default: -> { "CURRENT_TIMESTAMP" }, null: false
+    t.uuid "prosecho_person_id", null: false
+    t.string "status", default: "pending", null: false
+    t.datetime "updated_at", null: false
+    t.index ["church_next_account_id"], name: "index_church_next_link_deliveries_on_church_next_account_id", unique: true
+    t.index ["status", "next_attempt_at"], name: "idx_on_status_next_attempt_at_75b6040efb"
   end
 
   create_table "data_policies", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
@@ -144,6 +193,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_12_000002) do
   create_table "person_profiles", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
     t.date "birth_date"
     t.uuid "campus_id", null: false
+    t.string "churchnext_user_id"
     t.string "city"
     t.integer "connection_status_id"
     t.string "connection_status_label"
@@ -151,6 +201,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_12_000002) do
     t.datetime "created_at", null: false
     t.jsonb "custom_attributes", default: {}, null: false
     t.string "display_name", null: false
+    t.string "email"
     t.string "first_name"
     t.string "home_status", default: "missing", null: false
     t.jsonb "household", default: {}, null: false
@@ -177,8 +228,11 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_12_000002) do
     t.datetime "updated_at", null: false
     t.index ["campus_id", "policy_revision", "in_population"], name: "index_person_profiles_for_directory"
     t.index ["campus_id"], name: "index_person_profiles_on_campus_id"
+    t.index ["churchnext_user_id"], name: "index_person_profiles_on_churchnext_user_id", unique: true, where: "(churchnext_user_id IS NOT NULL)"
     t.index ["city"], name: "index_person_profiles_on_city"
     t.index ["connection_status_id"], name: "index_person_profiles_on_connection_status_id"
+    t.index ["email"], name: "index_person_profiles_on_email"
+    t.index ["last_name"], name: "index_person_profiles_on_last_name", opclass: :gin_trgm_ops, using: :gin
     t.index ["source_system", "rock_guid"], name: "index_person_profiles_on_source_system_and_rock_guid", unique: true
   end
 
@@ -431,6 +485,11 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_12_000002) do
   add_foreign_key "campus_accesses", "campuses"
   add_foreign_key "campus_accesses", "users"
   add_foreign_key "campuses", "campuses", column: "parent_id"
+  add_foreign_key "church_next_accounts", "person_profiles", on_delete: :nullify
+  add_foreign_key "church_next_candidates", "church_next_accounts"
+  add_foreign_key "church_next_candidates", "person_profiles", on_delete: :nullify
+  add_foreign_key "church_next_candidates", "users", column: "reviewed_by_id", on_delete: :nullify
+  add_foreign_key "church_next_link_deliveries", "church_next_accounts"
   add_foreign_key "data_policies", "users", column: "confirmed_by_id"
   add_foreign_key "data_policies", "users", column: "recorded_by_id"
   add_foreign_key "flashcard_cards", "flashcard_runs"

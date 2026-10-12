@@ -13,6 +13,12 @@ uses the read-only adapter and preserves local staff grants. The local server's 
 integration holds a process-only runtime Rock key; normal container credential mounts and
 configuration are unchanged.
 
+[ChurchNext account linking](docs/churchnext-linking.md) provides an authenticated identity-submission
+API and an administrator-only matching queue at `/admin/church_next_accounts`. Matching requires
+approved email import and a refreshed directory; established links do not grant application access.
+See the [API contract](docs/churchnext-api-contract.md) for the ChurchNext endpoints still to build
+and separate runtime credentials. This feature does not implement or deploy ChurchNext.
+
 Only administrators can **Refresh people from Rock**, from `/admin` or their pastoral workspace.
 It imports every campus in the catalog, regardless of directory filters or the administrator's
 viewing grants. Staff viewing access remains campus-scoped. The same all-campus entry point is

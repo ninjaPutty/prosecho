@@ -1,4 +1,7 @@
 development:
+  church_next_delivery_recovery:
+    class: ChurchNextLinkDeliveryRecoveryJob
+    schedule: every minute
   directory_schedule:
     class: ScheduledPersonRefreshJob
     schedule: every minute
@@ -9,6 +12,9 @@ development:
     class: FoundationReadinessJob
     schedule: every 4 hours
 production:
+  church_next_delivery_recovery:
+    class: ChurchNextLinkDeliveryRecoveryJob
+    schedule: every minute
   directory_schedule:
     class: ScheduledPersonRefreshJob
     schedule: every minute

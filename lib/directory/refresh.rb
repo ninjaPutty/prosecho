@@ -141,6 +141,7 @@ module Directory
             first_name: data.dig("names", "first_name"), last_name: data.dig("names", "last_name"),
             nick_name: data.dig("names", "nick_name"), display_name: data.fetch("display_name"),
             birth_date: data["birth_date"],
+            email: policy.selected_fields.include?("email") ? data["email"] : nil,
             connection_status_id: data.dig("connection_status", "id"),
             connection_status_label: data.dig("connection_status", "label"),
             marital_status_id: data.dig("marital_status", "id"),

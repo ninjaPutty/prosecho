@@ -2,7 +2,7 @@ require "test_helper"
 require "json"
 
 class PersonMapperTest < ActiveSupport::TestCase
-  def mapper(fields: DataPolicy::FIELD_LABELS.keys, attribute_keys: ["FirstVisit"])
+  def mapper(fields: DataPolicy::FIELD_LABELS.keys - ["email"], attribute_keys: ["FirstVisit"])
     Integrations::Rock::PersonMapper.new(fields: fields, attribute_keys: attribute_keys,
       campuses: {100001 => {id: campuses(:north).id, name: "Example North"}},
       today: Date.new(2026, 10, 5))
@@ -46,6 +46,16 @@ class PersonMapperTest < ActiveSupport::TestCase
     corrected = mapper.map(row.merge("FirstName" => "Known"))
     assert_equal "Known", corrected.display_name
     assert_not_includes corrected.issues, "person_name_missing"
+  end
+
+  test "email is normalized only when approved and invalid addresses are omitted" do
+    fields = DataPolicy::MINIMUM_FIELDS + ["email"]
+    row = person.merge("Email" => "  Synthetic+label@Example.Test  ")
+    assert_equal "synthetic+label@example.test", mapper(fields: fields).map(row).email
+    assert_nil mapper.map(row).email
+    assert_nil mapper(fields: fields).map(person.merge("Email" => "not an address")).email
+    assert_includes Integrations::Rock::PersonFields.columns(fields), "Email"
+    assert_not_includes Integrations::Rock::PersonFields.columns(DataPolicy::MINIMUM_FIELDS), "Email"
   end
 
   test "missing or ambiguous homes never use previous mailing or mapped locations" do

@@ -15,6 +15,9 @@ module Components
             plain "Manage staff access and the local campus structure."
             plain " These changes do not edit Rock."
           end
+          a(href: view_context.admin_church_next_accounts_path, class: "mb-6 inline-block text-teal-800 underline") do
+            plain "ChurchNext account matching"
+          end
           section(class: "mb-10 rounded-xl bg-white p-6 shadow-sm") do
             h2(class: "mb-3 text-xl font-semibold") { "Rock people refresh" }
             a(href: view_context.admin_sync_schedule_path, class: "mb-4 inline-block underline") do

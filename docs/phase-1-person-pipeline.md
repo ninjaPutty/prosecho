@@ -47,9 +47,13 @@ needed even when multiple rows share a GUID. The mapper validates every row; the
 merges repeated identities rather than rejecting duplicates or silently skipping invalid records.
 
 Rock IDs/GUIDs, campus identity, record classification, and source timestamps are system metadata.
-Names, birth components, status, family/photo references, and related records are requested only for
-the selected contract fields. Custom attributes are not expanded when the allowlist is empty;
-otherwise only the approved exact keys are requested and retained.
+Names, approved email, birth components, status, family/photo references, and related records are
+requested only for the selected contract fields. Custom attributes are not expanded when the
+allowlist is empty; otherwise only the approved exact keys are requested and retained.
+
+Email is an optional allowlisted field for [ChurchNext identity linking](churchnext-linking.md).
+Existing saved policies do not gain email approval automatically. Normalize approved addresses
+without inferring aliases; invalid or unapproved email values are omitted from the projection.
 
 Photo references additionally require the actor's photo permission. Precise addresses and
 coordinates require location permission. Without it, address requests select only location identity

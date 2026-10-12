@@ -1,6 +1,7 @@
 class PersonProfile < ApplicationRecord
   belongs_to :campus
   before_validation :supply_missing_name
+  before_validation { self.email = Directory::EmailAddress.normalize(email) }
   validates :display_name, :observed_at, :policy_revision, :rock_guid, presence: true
   validates :rock_id, numericality: {only_integer: true, greater_than: 0}
   validates :rock_guid, uniqueness: {scope: :source_system}

@@ -54,6 +54,7 @@ module Integrations
           names: immutable(names), display_name: display_name.freeze,
           birth_date: birth&.freeze, age: birth ? age(birth) : nil,
           connection_status: connection,
+          email: selected?("email") ? Directory::EmailAddress.normalize(row["Email"])&.freeze : nil,
           marital_status: selected?("marital_status") ? lookup(row, "MaritalStatusValue") : nil,
           photo_id: (selected?("photo") && positive_id?(row["PhotoId"])) ? row["PhotoId"] : nil,
           home_address: selected?("home_address") ? address(row, locations, issues) : nil,

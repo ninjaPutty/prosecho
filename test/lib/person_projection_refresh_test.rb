@@ -40,6 +40,23 @@ class PersonProjectionRefreshTest < ActiveSupport::TestCase
     assert_equal 1, @run.imported_count
   end
 
+  test "publication imports only approved emails and preserves ChurchNext identity links" do
+    profile = person_profiles(:alex)
+    profile.update!(churchnext_user_id: "synthetic-cn-id")
+    approved = Integrations::Rock::PersonRecord.new(**@person.to_h.merge(email: "synthetic@example.test"))
+    Directory::Refresh.new(run: @run, reader: reader { |**_| page(people: [approved]) }).call
+    assert_equal "succeeded", @run.reload.status
+    assert_equal "synthetic@example.test", profile.reload.email
+    assert_equal "synthetic-cn-id", profile.churchnext_user_id
+
+    @policy.update!(selected_fields: @policy.selected_fields - ["email"])
+    run = PersonRefreshRun.start!(actor: @actor)
+    Directory::Refresh.new(run: run, reader: reader { |**_| page(people: [approved]) }).call
+    assert_equal "succeeded", run.reload.status
+    assert_nil profile.reload.email
+    assert_equal "synthetic-cn-id", profile.churchnext_user_id
+  end
+
   test "refresh pages default to 250 and can be increased to 500" do
     fake = reader do |limit:, **_|
       assert_equal 250, limit

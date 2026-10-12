@@ -6,6 +6,7 @@ class DataPolicy < ApplicationRecord
   FIELD_LABELS = {
     "birth_date" => "Birth date (age filtering)",
     "connection_status" => "Connection status",
+    "email" => "Email address (ChurchNext account linking)",
     "first_name" => "First name",
     "home_address" => "Primary home address and town",
     "household" => "Family membership and roles",

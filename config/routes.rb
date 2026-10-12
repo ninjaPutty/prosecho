@@ -4,6 +4,11 @@ Rails.application.routes.draw do
     get :recovery_codes
   end
   get "dashboard", to: "dashboard#show"
+  namespace :api do
+    namespace :v1 do
+      post "churchnext/account_links", to: "church_next_links#create", as: :church_next_links
+    end
+  end
   namespace :workspace do
     resource :filters, only: %i[create destroy]
     post "refresh", to: "refreshes#create"
@@ -19,6 +24,13 @@ Rails.application.routes.draw do
   end
   namespace :admin do
     root "dashboard#show"
+    resources :church_next_accounts, only: :index do
+      get :photo, on: :member
+    end
+    resources :church_next_candidates, only: [] do
+      post :match, on: :member
+      post :reject, on: :member
+    end
     post "setup", to: "setup#create"
     resources :accounts, only: %i[new create edit update] do
       post :reset_authenticator, on: :member

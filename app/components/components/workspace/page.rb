@@ -38,7 +38,7 @@ module Components
                     p { "Pastoral workspace" }
                   end
                 end
-                nav(class: "flex items-center gap-4 text-sm", aria_label: "Workspace views") do
+                nav(class: "flex flex-wrap items-center gap-4 text-sm", aria_label: "Workspace views") do
                   links = {people: ["People", view_context.dashboard_path],
                            map: ["Map", view_context.workspace_map_path]}
                   if view_context.current_user&.view_history? || active == :changes
@@ -46,6 +46,9 @@ module Components
                   end
                   if view_context.current_user&.view_photos? || active == :flashcards
                     links[:flashcards] = ["Flashcards", view_context.workspace_flashcards_path]
+                  end
+                  if view_context.current_user&.administrator? || active == :church_next_accounts
+                    links[:church_next_accounts] = ["ChurchNext accounts", view_context.admin_church_next_accounts_path]
                   end
                   links.each do |key, values|
                     a(href: values.last, aria_current: (active == key) ? "page" : nil,
