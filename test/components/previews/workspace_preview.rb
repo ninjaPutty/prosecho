@@ -7,6 +7,10 @@ class WorkspacePreview < Lookbook::Preview
     def can_access?(*args)
       false
     end
+
+    def view_photos?
+      false
+    end
   end
 
   class PreviewAdministrator < PreviewActor

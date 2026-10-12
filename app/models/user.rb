@@ -3,6 +3,8 @@ class User < ApplicationRecord
 
   has_many :campus_accesses, dependent: :destroy
   has_many :campuses, through: :campus_accesses
+  has_many :flashcard_reviews, dependent: :destroy
+  has_many :flashcard_runs, dependent: :destroy
 
   validates :active, :view_history, :view_locations, :view_photos, inclusion: {in: [true, false]}
   validates :role, inclusion: {in: %w[administrator staff]}

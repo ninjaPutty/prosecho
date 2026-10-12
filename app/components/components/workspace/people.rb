@@ -60,6 +60,9 @@ module Components
             end
             return
           end
+          if @actor.view_photos?
+            render FlashcardSummary.new(days: Directory::Flashcards.new(actor: @actor).summary)
+          end
           div(class: "mb-7 grid gap-4 sm:grid-cols-3") do
             summary("People in this view", @query.total.to_s,
               "Your campus scope and current filters")

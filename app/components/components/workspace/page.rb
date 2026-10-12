@@ -44,6 +44,9 @@ module Components
                   if view_context.current_user&.view_history? || active == :changes
                     links[:changes] = ["Changes", view_context.workspace_changes_path]
                   end
+                  if view_context.current_user&.view_photos? || active == :flashcards
+                    links[:flashcards] = ["Flashcards", view_context.workspace_flashcards_path]
+                  end
                   links.each do |key, values|
                     a(href: values.last, aria_current: (active == key) ? "page" : nil,
                       class: (active == key) ? "font-semibold text-teal-800" : "text-stone-500") do

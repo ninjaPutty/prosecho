@@ -10,6 +10,9 @@ Rails.application.routes.draw do
     get "refresh/status", to: "refreshes#show", as: :refresh_status
     get "map", to: "views#map"
     get "changes", to: "views#changes"
+    resources :flashcards, only: %i[index create show] do
+      post :answer, on: :member
+    end
     resources :people, only: :show do
       get "photo", to: "photos#show"
     end

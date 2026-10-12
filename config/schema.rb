@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_12_000001) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_12_000002) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -70,6 +70,42 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_12_000001) do
     t.index ["slot"], name: "index_data_policies_on_slot", unique: true
     t.check_constraint "slot = 1", name: "data_policies_singleton"
     t.check_constraint "status::text = ANY (ARRAY['draft'::character varying::text, 'confirmed'::character varying::text])", name: "data_policies_status"
+  end
+
+  create_table "flashcard_cards", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.datetime "answered_at"
+    t.boolean "correct"
+    t.datetime "created_at", null: false
+    t.uuid "flashcard_run_id", null: false
+    t.uuid "option_ids", default: [], null: false, array: true
+    t.uuid "person_profile_id"
+    t.integer "position", null: false
+    t.datetime "updated_at", null: false
+    t.index ["flashcard_run_id", "position"], name: "index_flashcard_cards_on_flashcard_run_id_and_position", unique: true
+    t.index ["flashcard_run_id"], name: "index_flashcard_cards_on_flashcard_run_id"
+    t.index ["person_profile_id"], name: "index_flashcard_cards_on_person_profile_id"
+  end
+
+  create_table "flashcard_reviews", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.datetime "due_at", null: false
+    t.integer "level", default: 0, null: false
+    t.uuid "person_profile_id", null: false
+    t.datetime "updated_at", null: false
+    t.uuid "user_id", null: false
+    t.index ["person_profile_id"], name: "index_flashcard_reviews_on_person_profile_id"
+    t.index ["user_id", "person_profile_id"], name: "index_flashcard_reviews_on_user_id_and_person_profile_id", unique: true
+    t.index ["user_id"], name: "index_flashcard_reviews_on_user_id"
+  end
+
+  create_table "flashcard_runs", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.string "campus_ids", default: [], null: false, array: true
+    t.datetime "created_at", null: false
+    t.integer "planned_count", null: false
+    t.string "status_ids", default: [], null: false, array: true
+    t.datetime "updated_at", null: false
+    t.uuid "user_id", null: false
+    t.index ["user_id"], name: "index_flashcard_runs_on_user_id"
   end
 
   create_table "foundation_checks", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
@@ -397,6 +433,11 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_12_000001) do
   add_foreign_key "campuses", "campuses", column: "parent_id"
   add_foreign_key "data_policies", "users", column: "confirmed_by_id"
   add_foreign_key "data_policies", "users", column: "recorded_by_id"
+  add_foreign_key "flashcard_cards", "flashcard_runs"
+  add_foreign_key "flashcard_cards", "person_profiles", on_delete: :nullify
+  add_foreign_key "flashcard_reviews", "person_profiles", on_delete: :cascade
+  add_foreign_key "flashcard_reviews", "users"
+  add_foreign_key "flashcard_runs", "users"
   add_foreign_key "person_change_events", "campuses"
   add_foreign_key "person_change_events", "campuses", column: "previous_campus_id"
   add_foreign_key "person_change_events", "person_profiles", on_delete: :nullify
