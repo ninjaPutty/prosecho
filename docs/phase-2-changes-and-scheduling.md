@@ -56,6 +56,12 @@ directory's campus, connection-status, age, town, and name filters. Filters live
 session; public URLs contain pagination only. The optional discovery-window filter is also
 available in the People view to find people with recent visible changes.
 
+Present discovered events in this order: connection-status changes, household-membership changes,
+then home-address changes. Paginate each category independently so moving through one section does
+not change the others. Each full-width entry places the person's permitted portrait and name first,
+the observed values in the middle, and discovery time at the upper right. Show a portrait only when
+the viewer has current photo permission.
+
 Every event requires current access to the person and to both its recorded current and previous
 campus. Precise historical/current address details additionally require location permission.
 Household member facts are redacted to the viewer's currently granted member campuses, and events

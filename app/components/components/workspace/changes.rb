@@ -42,39 +42,7 @@ module Components
             end
           end
           p(class: "mb-4 text-sm text-stone-500") { "#{@query.total} discovered changes in this view" }
-          if @query.events.empty?
-            div(class: "#{CARD} p-8") do
-              h2(class: "text-xl font-semibold") { "No changes discovered in this view" }
-              p(class: "mt-3 text-stone-500") do
-                plain "The first successful import establishes a quiet baseline."
-                plain " Later completed imports report observed differences here."
-              end
-            end
-          else
-            ul(class: "#{CARD} divide-y divide-stone-100") do
-              @query.events.each do |event|
-                view = Directory::ChangeView.new(event: event, actor: @actor)
-                li(class: "p-6") do
-                  a(href: view_context.workspace_person_path(event.person_profile),
-                    class: "font-semibold text-teal-800 underline") { event.person_profile.display_name }
-                  h2(class: "mt-2 font-semibold") { view.title }
-                  p(class: "mt-2 text-sm text-stone-600") { view.description }
-                  p(class: "mt-3 text-xs text-stone-500") do
-                    plain "Discovered #{event.discovered_at.in_time_zone.strftime("%b %-d, %Y %H:%M %Z")}. "
-                    plain "#{event.campus.name}."
-                  end
-                end
-              end
-            end
-          end
-          div(class: "mt-6 flex gap-5 text-sm") do
-            if @query.page > 1
-              a(href: view_context.workspace_changes_path(page: @query.page - 1)) { "Previous" }
-            end
-            if @query.page * Directory::ChangesQuery::PAGE_SIZE < @query.total
-              a(href: view_context.workspace_changes_path(page: @query.page + 1)) { "Next" }
-            end
-          end
+          @query.sections.each { |section| render_section(section) }
         end
       end
 
@@ -84,6 +52,70 @@ module Components
         label do
           plain label
           input(name: "filters[#{key}]", type: type, value: @query.filters[key], class: INPUT)
+        end
+      end
+
+      def render_section(section)
+        section(class: "mb-8") do
+          div(class: "mb-3 flex items-baseline justify-between gap-4") do
+            h2(class: "text-2xl font-semibold tracking-tight") { section.title }
+            p(class: "text-sm text-stone-500") { "#{section.total} changes" }
+          end
+          if section.events.empty?
+            div(class: "#{CARD} p-5 text-sm text-stone-500") { "No changes in this section." }
+          else
+            ul(class: "#{CARD} w-full divide-y divide-stone-100") do
+              section.events.each { |event| render_event(event) }
+            end
+          end
+          render_pagination(section)
+        end
+      end
+
+      def render_event(event)
+        person = event.person_profile
+        person_view = Directory::PersonView.new(person: person, actor: @actor)
+        change_view = Directory::ChangeView.new(event: event, actor: @actor)
+        li(class: "w-full p-4 sm:p-5") do
+          div(class: "grid w-full gap-4 sm:grid-cols-[minmax(0,1fr)_minmax(0,2fr)] " \
+            "lg:grid-cols-[minmax(13rem,1fr)_minmax(0,2fr)_12rem] lg:items-start") do
+            a(href: view_context.workspace_person_path(person),
+              class: "flex min-w-0 items-center gap-3 font-semibold text-teal-800 underline") do
+              portrait(person_view, size: "size-12")
+              span(class: "min-w-0 truncate") { person.display_name }
+            end
+            div(class: "min-w-0") do
+              h3(class: "font-semibold text-stone-900") { change_view.title }
+              p(class: "mt-1 text-sm text-stone-600") { change_view.description }
+            end
+            div(class: "text-xs text-stone-500 lg:text-right") do
+              p(class: "font-medium text-stone-700") do
+                plain event.discovered_at.in_time_zone.strftime("%b %-d, %Y %H:%M %Z")
+              end
+              p(class: "mt-1") { event.campus.name }
+            end
+          end
+        end
+      end
+
+      def render_pagination(section)
+        return if section.total <= Directory::ChangesQuery::PAGE_SIZE
+
+        params = @query.sections.each_with_object({}) do |item, values|
+          value = view_context.params[item.param]
+          values[item.param] = value if value.present?
+        end
+        div(class: "mt-3 flex justify-end gap-5 text-sm") do
+          if section.page > 1
+            a(href: view_context.workspace_changes_path(params.merge(section.param => section.page - 1))) do
+              "Previous #{section.title.downcase}"
+            end
+          end
+          if section.page * Directory::ChangesQuery::PAGE_SIZE < section.total
+            a(href: view_context.workspace_changes_path(params.merge(section.param => section.page + 1))) do
+              "Next #{section.title.downcase}"
+            end
+          end
         end
       end
 

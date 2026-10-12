@@ -5,8 +5,9 @@ module Workspace
         AccessEvent.create!(actor: current_user, resource: "history", outcome: "denied")
         return head :forbidden
       end
+      pages = params.permit(:connection_page, :household_page, :address_page)
       query = Directory::ChangesQuery.new(actor: current_user, filters: session[:people_filters] || {},
-        page: params.fetch(:page, 1))
+        pages: pages)
       AccessEvent.create!(actor: current_user, resource: "history", outcome: "allowed")
       render Components::Workspace::Changes.new(query: query, actor: current_user)
     end

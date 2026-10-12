@@ -87,6 +87,42 @@ class PersonHistoryTest < ActionDispatch::IntegrationTest
     assert_includes response.body, "Choose a discovery window"
   end
 
+  test "change sections have stable priority and only show photos when authorized" do
+    event
+    event(type: "family_composition_changed", household_reference_changed: true)
+    event(type: "home_address_changed")
+
+    get workspace_changes_path
+
+    assert_response :success
+    assert_select "h2" do |headings|
+      assert_equal ["Connection status", "Household membership", "Address changed"],
+        headings.map(&:text)
+    end
+    assert_select "img[data-portrait]", 3
+
+    @actor.update!(view_photos: false)
+    get workspace_changes_path
+    assert_select "img[data-portrait]", 0
+  end
+
+  test "each change section paginates independently" do
+    25.times do |index|
+      run = PersonRefreshRun.start!(actor: users(:administrator))
+      run.update!(status: "succeeded", finished_at: Time.current)
+      event(person: person_profiles(index.even? ? :alex : :casey), refresh_run: run)
+    end
+    event(type: "family_composition_changed")
+
+    get workspace_changes_path(connection_page: 2, household_page: 1)
+
+    assert_response :success
+    assert_select "h2", text: "Connection status"
+    assert_select "h2", text: "Household membership"
+    assert_select "a[href*='connection_page=1']", text: "Previous connection status"
+    assert_select "a[href*='household_page=1']", text: "Previous household membership", count: 0
+  end
+
   test "a changed policy hides previous history rather than exposing fields from an older allowlist" do
     event
     @policy.update!(history_retention_days: 180)

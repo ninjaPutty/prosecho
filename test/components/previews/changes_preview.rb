@@ -27,9 +27,13 @@ class ChangesPreview < Lookbook::Preview
   private
 
   def query(events)
-    Struct.new(:days, :errors, :events, :filters, :options, :page, :total).new(
-      days: 30, errors: [], events: events, filters: {},
-      options: {campuses: [], statuses: [], towns: []}, page: 1, total: events.size
+    sections = Directory::ChangesQuery::SECTIONS.map do |key, (type, title, param)|
+      section_events = events.select { |event| event.event_type == type }
+      Directory::ChangesQuery::Section.new(key, param, title, section_events, 1, section_events.size)
+    end
+    Struct.new(:days, :errors, :filters, :options, :sections, :total).new(
+      days: 30, errors: [], filters: {}, options: {campuses: [], statuses: [], towns: []},
+      sections: sections, total: events.size
     )
   end
 end
