@@ -44,4 +44,41 @@ class UserTest < ActiveSupport::TestCase
     user.update!(active: false)
     assert_not user.can_access?(campuses(:north).id, :directory)
   end
+
+  test "authenticator enrollment requires a valid code and rejects code replay" do
+    user = users(:staff)
+    user.start_authenticator_enrollment!
+
+    refute user.authenticator_enabled?
+    code = ROTP::TOTP.new(user.authenticator_setup_key, issuer: "Prosecho").now
+    assert user.enable_authenticator!(code)
+    assert user.authenticator_enabled?
+    assert_not user.verify_authenticator_code(code)
+
+    travel 30.seconds do
+      assert user.verify_authenticator_code(ROTP::TOTP.new(user.authenticator_setup_key).now)
+    end
+  end
+
+  test "invalid enrollment codes increment the authenticator failure counter" do
+    user = users(:staff)
+    user.start_authenticator_enrollment!
+
+    refute user.enable_authenticator!("invalid")
+
+    assert_equal 1, user.reload.otp_failed_attempts
+  end
+
+  test "resetting an authenticator clears its encrypted enrollment" do
+    user = users(:staff)
+    user.start_authenticator_enrollment!
+    user.enable_authenticator!(ROTP::TOTP.new(user.authenticator_setup_key).now)
+    authenticator_salt = user.authenticatable_salt
+
+    user.reset_authenticator!
+
+    assert_nil user.otp_secret_ciphertext
+    refute user.authenticator_enabled?
+    assert_not_equal authenticator_salt, user.authenticatable_salt
+  end
 end

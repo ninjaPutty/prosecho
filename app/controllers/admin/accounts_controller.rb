@@ -18,6 +18,16 @@ module Admin
       render_account(User.new, new_record: true)
     end
 
+    def reset_authenticator
+      user = User.find(params[:id])
+      User.transaction do
+        user.reset_authenticator!
+        AccessEvent.create!(actor: current_user, resource: "account", resource_id: user.id,
+          outcome: "updated")
+      end
+      redirect_to edit_admin_account_path(user), notice: "Authenticator reset. The user must enroll again."
+    end
+
     def update
       user = User.find(params[:id])
       values = account_attributes

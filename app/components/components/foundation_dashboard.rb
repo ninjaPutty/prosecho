@@ -26,6 +26,9 @@ module Components
                 plain "Account administration"
               end
             end
+            a(href: view_context.new_authenticator_path, class: "mb-6 ml-4 inline-block text-teal-800 underline") do
+              plain "Set up authenticator"
+            end
             form(action: view_context.destroy_user_session_path, method: "post") do
               input(type: "hidden", name: "_method", value: "delete")
               input(type: "hidden", name: "authenticity_token",

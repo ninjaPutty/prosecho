@@ -122,6 +122,21 @@ class AdminDashboardTest < ActionDispatch::IntegrationTest
     assert_response :unprocessable_content
   end
 
+  test "administrator resets an authenticator for a phone change" do
+    administrator = users(:administrator)
+    staff = users(:staff)
+    staff.start_authenticator_enrollment!
+    staff.enable_authenticator!(ROTP::TOTP.new(staff.authenticator_setup_key).now)
+    sign_in administrator
+
+    assert_difference "AccessEvent.where(resource: 'account', outcome: 'updated').count", 1 do
+      post reset_authenticator_admin_account_path(staff)
+    end
+
+    assert_redirected_to edit_admin_account_path(staff)
+    refute staff.reload.authenticator_enabled?
+  end
+
   test "campus hierarchy is editable without changing Rock and does not inherit access" do
     sign_in users(:administrator)
     campus = Campus.create!(name: "Example Satellite", rock_id: 100003,

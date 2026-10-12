@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_10_000002) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_12_000001) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -375,6 +375,13 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_10_000002) do
     t.string "encrypted_password", null: false
     t.integer "failed_attempts", default: 0, null: false
     t.datetime "locked_at"
+    t.datetime "otp_enabled_at"
+    t.integer "otp_failed_attempts", default: 0, null: false
+    t.datetime "otp_last_used_at"
+    t.string "otp_recovery_code_digests", default: [], null: false, array: true
+    t.boolean "otp_required", default: true, null: false
+    t.text "otp_secret_ciphertext"
+    t.string "otp_session_version", default: "", null: false
     t.string "role", default: "staff", null: false
     t.datetime "updated_at", null: false
     t.boolean "view_history", default: false, null: false

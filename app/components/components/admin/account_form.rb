@@ -61,6 +61,23 @@ module Components
               button(type: "submit", class: BUTTON) { "Save account" }
               a(href: view_context.admin_root_path, class: "ml-4 underline") { "Cancel" }
             end
+            unless @new_record
+              section(class: "mt-6 space-y-3 border-t pt-6") do
+                h2(class: "font-semibold") { "Authenticator app" }
+                p(class: "text-sm text-stone-600") do
+                  plain @user.authenticator_enabled? ? "Authenticator is enabled." : "Authenticator is not enrolled."
+                end
+                p(class: "text-sm text-stone-600") do
+                  plain "For a changed or lost phone, reset after verifying the account owner's identity."
+                  plain " Existing sessions end and the user must enroll a new authenticator."
+                end
+                post_form(action: view_context.reset_authenticator_admin_account_path(@user)) do
+                  button(type: "submit", class: "rounded border border-red-700 px-4 py-2 text-red-800") do
+                    plain "Reset authenticator"
+                  end
+                end
+              end
+            end
           end
         end
       end

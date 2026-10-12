@@ -19,6 +19,13 @@
 - Five failed attempts lock an account for 30 minutes. Sessions expire after 30 minutes of
   inactivity. A password change invalidates prior sessions. Disabled accounts and revoked campus
   grants lose access on their next request.
+- Every account requires time-based one-time-password (TOTP) verification through an authenticator
+  app such as Authy or Microsoft Authenticator. New accounts must enroll after password
+  authentication and confirm the first code before access is granted. The encrypted enrollment
+  secret is never logged, codes cannot be replayed, and failed verification is rate-limited and
+  locks the account after five attempts. An administrator who verifies a phone change can reset the
+  factor in account administration; the user then signs in with their password and enrolls a new
+  authenticator.
 - The sign-in and foundation pages use small app-owned Phlex compositions. The shared Menlo UI
   README was not publicly accessible during this work; no shared component contract or private-gem
   access was assumed.

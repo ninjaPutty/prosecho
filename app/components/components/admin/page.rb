@@ -47,6 +47,7 @@ module Components
                     plain "Account administration"
                   end
                   a(href: view_context.dashboard_path) { "Pastoral workspace" }
+                  a(href: view_context.new_authenticator_path) { "Authenticator" }
                   post_form(action: view_context.destroy_user_session_path, method: "delete") do
                     button(type: "submit", class: "underline") { "Sign out" }
                   end

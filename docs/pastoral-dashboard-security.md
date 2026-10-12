@@ -11,6 +11,14 @@ photo/history/location permissions. This boundary must be enforced on each new p
 before loading live Rock data. Anonymous users must never access people, map, change, sync, or photo
 endpoints. See [Phase 0 foundations](phase-0-foundations.md) for current verification and gates.
 
+Every account requires TOTP verification using an authenticator app such as Authy or Microsoft
+Authenticator. New accounts enroll after password authentication and cannot access the application
+until they confirm the first generated code. Store only an encrypted TOTP secret, reject a code once
+it has been used, rate-limit verification attempts, and lock the account after five failed codes. Do
+not use a vendor-specific identity, phone number, or recovery API. A lost or replaced phone requires
+administrator identity verification and an audited factor reset; resetting the factor invalidates
+existing sessions and requires new enrollment.
+
 `/admin` offers first-account setup only while no accounts exist. A database lock serializes setup.
 Once the first administrator exists, all account/campus administration is restricted to active,
 unlocked administrators. Setup stays closed, including stale submissions. CSRF-protected forms

@@ -1,5 +1,8 @@
 Rails.application.routes.draw do
   devise_for :users, only: :sessions, controllers: {sessions: "users/sessions"}
+  resource :authenticator, only: %i[new create] do
+    get :recovery_codes
+  end
   get "dashboard", to: "dashboard#show"
   namespace :workspace do
     resource :filters, only: %i[create destroy]
@@ -14,7 +17,9 @@ Rails.application.routes.draw do
   namespace :admin do
     root "dashboard#show"
     post "setup", to: "setup#create"
-    resources :accounts, only: %i[new create edit update]
+    resources :accounts, only: %i[new create edit update] do
+      post :reset_authenticator, on: :member
+    end
     resources :campuses, only: %i[edit update] do
       post :import, on: :collection
     end

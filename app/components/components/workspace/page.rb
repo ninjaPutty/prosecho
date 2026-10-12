@@ -58,6 +58,9 @@ module Components
                   post_form(action: view_context.destroy_user_session_path, method: "delete") do
                     button(type: "submit", class: "text-stone-500") { "Sign out" }
                   end
+                  a(href: view_context.new_authenticator_path, class: "text-stone-500") do
+                    plain "Authenticator"
+                  end
                 end
               end
             end

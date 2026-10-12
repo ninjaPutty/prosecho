@@ -16,7 +16,13 @@ class StaffAccessTest < ActionDispatch::IntegrationTest
   test "sign in and sign out work without public registration" do
     user = users(:staff)
     user.update!(password: "a unique long passphrase")
+    enroll_authenticator(user)
+
     post user_session_path, params: {user: {email: user.email, password: "a unique long passphrase"}}
+    assert_redirected_to new_authenticator_path
+    travel 30.seconds do
+      post authenticator_path, params: {otp_code: ROTP::TOTP.new(user.authenticator_setup_key).now}
+    end
     assert_redirected_to dashboard_path
     get dashboard_path
     assert_response :success
@@ -38,7 +44,41 @@ class StaffAccessTest < ActionDispatch::IntegrationTest
       email: administrator.email, password: "a unique long passphrase"
     }}
 
+    assert_redirected_to new_authenticator_path
+  end
+
+  test "every account must enroll and verify an authenticator before sign-in completes" do
+    user = users(:staff)
+    user.update!(password: "a unique long passphrase")
+
+    post user_session_path, params: {user: {email: user.email, password: "a unique long passphrase"}}
+    assert_redirected_to new_authenticator_path
+    get new_authenticator_path
+    assert_response :success
+    assert_select "h1", "Set up your authenticator"
+    code = ROTP::TOTP.new(user.reload.authenticator_setup_key).now
+    post authenticator_path, params: {otp_code: code}
+    assert_redirected_to recovery_codes_authenticator_path
+    assert user.reload.authenticator_enabled?
+    follow_redirect!
+    assert_select "h1", "Save your recovery codes"
+
+    delete destroy_user_session_path
+    post user_session_path, params: {user: {email: user.email, password: "a unique long passphrase"}}
+    assert_redirected_to new_authenticator_path
+    travel 30.seconds do
+      post authenticator_path, params: {otp_code: ROTP::TOTP.new(user.authenticator_setup_key).now}
+    end
     assert_redirected_to dashboard_path
+  end
+
+  test "failed enrollment codes count toward account lockout" do
+    user = users(:staff)
+    user.start_authenticator_enrollment!
+
+    User.maximum_attempts.times { refute user.enable_authenticator!("000000") }
+
+    assert user.reload.access_locked?
   end
 
   test "dashboard denies a user with no campus grant and records no personal payload" do
@@ -104,5 +144,12 @@ class StaffAccessTest < ActionDispatch::IntegrationTest
     assert_response :unprocessable_content
   ensure
     ActionController::Base.allow_forgery_protection = original
+  end
+
+  private
+
+  def enroll_authenticator(user)
+    user.start_authenticator_enrollment!
+    user.enable_authenticator!(ROTP::TOTP.new(user.authenticator_setup_key).now)
   end
 end
