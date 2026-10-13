@@ -13,7 +13,8 @@ No separate deployment container or workstation Docker socket is required.
 The image includes the pinned Docker CLI, Buildx, and cloudflared; Kamal is in
 the development bundle. Rebuild the image to acquire newly added tools.
 
-VS Code forwards the existing SSH agent. It must contain the Prosecho deployment
+Host initialization shares the selected existing SSH agent at the canonical
+container path; see [Developer SSH](developer-ssh.md). It must contain the Prosecho deployment
 identity, fingerprint `SHA256:cPD+CrrfISC9ll5vIVtocfcP5dQcyYaMvj5wAebYj5M`;
 other loaded identities are allowed. The committed public selector
 `.devcontainer/production_deploy.pub` selects only that identity for Prosecho SSH.
@@ -52,8 +53,8 @@ podman-compose -p prosecho -f .devcontainer/compose.yaml -f .devcontainer/compos
 ```
 
 For Docker/OrbStack use `docker compose`. Retain the overlay on subsequent
-Compose invocations. VS Code supplies agent forwarding on attachment; plain
-Compose terminals need the existing documented developer agent setup.
+Compose invocations. The runtime overlay supplies the same selected agent to
+VS Code and plain Compose terminals; VS Code session forwarding is disabled.
 Alternatively, keep the credential file outside the checkout inside `app` at
 `~/.local/share/prosecho/app.env`, or set `PROSECHO_DEPLOY_SECRETS_FILE` to its
 path. The default uses `/run/prosecho/app.env` when mounted, then the local file.

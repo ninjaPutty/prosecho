@@ -5,15 +5,16 @@
   "runServices": ["app", "postgres"],
   "workspaceFolder": "/prosecho",
   "remoteUser": "vscode",
+  "remoteEnv": {"SSH_AUTH_SOCK": "${containerEnv:SSH_AUTH_SOCK}"},
   "updateRemoteUserUID": true,
   "initializeCommand": "sh .devcontainer/initialize.sh",
   "postCreateCommand": "sh .devcontainer/setup.sh --automatic",
   "postAttachCommand": "sh .devcontainer/post-attach.sh",
-    "forwardPorts": [3000],
+  "forwardPorts": [3000],
   "customizations": {
     "vscode": {
       "settings": {
-        "dev.containers.forwardSSHAgent": true,
+        "dev.containers.forwardSSHAgent": false,
         "terminal.integrated.cwd": "/prosecho"
       },
       "extensions": ["shopify.ruby-lsp", "standard.vscode-standard"]

@@ -10,6 +10,8 @@ services:
       PGUSER: postgres
     volumes:
       - ..:/prosecho:cached
+      - opencode-data:/home/vscode/.local/share/opencode
+      - opencode-cache:/home/vscode/.cache/opencode
     ports:
       - "127.0.0.1:3100:3000"
   postgres:
@@ -20,4 +22,6 @@ services:
       - postgres-data:/var/lib/postgresql/data
 
 volumes:
+  opencode-data:
+  opencode-cache:
   postgres-data:

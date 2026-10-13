@@ -4,9 +4,11 @@ from pathlib import Path
 import json
 import re
 import shutil
+import shlex
 import socket
 import subprocess
 import tempfile
+import time
 import unittest
 
 
@@ -18,7 +20,11 @@ class InitializeTest(unittest.TestCase):
     def initialize(self, engines, override=None, logs=False, remove_logs=False,
                    agent=None, socket_override=False, secrets=None, remove_secrets=False,
                       special_home=False, logs_file=False, existing_state=False,
-                      stale_state_mounts=False):
+                       stale_state_mounts=False, context=None, docker_context=None,
+                       docker_host=None, probe=None, probe_image=True, host_os="Linux",
+                        shared=True, probe_id=None, image_status=0, context_status=0,
+                        connection_env=None, relative=False, endpoint="unix:///var/run/docker.sock",
+                        endpoint_status=0):
         with tempfile.TemporaryDirectory() as directory:
             parent = Path(directory) / "project with spaces"
             root = parent / "src"
@@ -36,11 +42,39 @@ class InitializeTest(unittest.TestCase):
                 log_dir.touch()
             commands = root / "commands"
             commands.mkdir()
-            for name in ("id", "mkdir", "sed"):
+            for name in ("id", "mkdir", "sed", "sleep"):
                 (commands / name).symlink_to(shutil.which(name))
+            (commands / "uname").write_text(f"#!/bin/sh\nprintf '%s\\n' '{host_os}'\n")
+            (commands / "uname").chmod(0o755)
             for name, output in engines.items():
                 executable = commands / name
-                executable.write_text(f"#!/bin/sh\nprintf '%s\\n' '{output}'\n")
+                executable.write_text(
+                    "#!/bin/sh\n"
+                    'case "$1 $2" in\n'
+                    "  'context show') printf '%s\\n' default ;;\n"
+                    "  'context inspect') printf '%s\\n' unix:///var/run/docker.sock ;;\n"
+                    f"  *) printf '%s\\n' {shlex.quote(output)} ;;\nesac\n")
+                executable.chmod(0o755)
+            if context is not None or probe is not None or override in ("docker", "orbstack"):
+                executable = commands / "docker"
+                executable.write_text(
+                    "#!/bin/sh\n"
+                    'printf "%s\\n" "$*" >> "$HOME/engine-calls"\n'
+                    'case "$1 $2" in\n'
+                    f"  'context show') printf '%s\\n' {shlex.quote(context or 'default')}; "
+                    f"exit {context_status} ;;\n"
+                    f"  'context inspect') printf '%s\\n' {shlex.quote(endpoint)}; "
+                    f"exit {endpoint_status} ;;\n"
+                    "  'image inspect') " + (
+                        "printf '%s\\n' " + shlex.quote(probe_id or "sha256:" + "a" * 64) +
+                        f"; exit {image_status} ;;\n"
+                        if probe_image else "exit 1 ;;\n") +
+                    "  'run --rm') " + {
+                        "ok": "exit 0", "missing": "exit 1",
+                        "empty-agent": "exit 0", "malformed": "printf 'diagnostic'; exit 1",
+                        "timeout": "exec sleep 30",
+                    }.get(probe, "exit 1") + " ;;\n"
+                    "  *) printf '%s\\n' 'Client: Docker Engine' ;;\nesac\n")
                 executable.chmod(0o755)
             runtime_dir = parent / "runtime"
             runtime_dir.mkdir()
@@ -50,6 +84,11 @@ class InitializeTest(unittest.TestCase):
             shared_agent = socket.socket(socket.AF_UNIX)
             shared_agent.bind(str(runtime_dir / "shared.sock"))
             self.addCleanup(shared_agent.close)
+            shared_path = runtime_dir / "shared.sock"
+            if shared in ("file", "missing"):
+                shared_path = runtime_dir / "not-a-socket"
+                if shared == "file":
+                    shared_path.touch()
             if agent == "socket":
                 dedicated_agent = socket.socket(socket.AF_UNIX)
                 dedicated_agent.bind(str(agent_path))
@@ -72,14 +111,26 @@ class InitializeTest(unittest.TestCase):
                     secrets_path.mkdir()
             env = {"PATH": str(commands), "XDG_RUNTIME_DIR": str(runtime_dir),
                    "HOME": str(home),
-                   "SSH_AUTH_SOCK": str(runtime_dir / "shared.sock")}
+                   "SSH_AUTH_SOCK": str(shared_path) if shared else ""}
+            if docker_context is not None:
+                env["DOCKER_CONTEXT"] = docker_context
+            if docker_host is not None:
+                env["DOCKER_HOST"] = docker_host
             if socket_override is not False:
                 env["PROSECHO_DEV_SSH_AGENT_SOCK"] = str(agent_path) if socket_override else ""
+            if relative:
+                variable = "PROSECHO_DEV_SSH_AGENT_SOCK" if socket_override else "SSH_AUTH_SOCK"
+                # The relative path really resolves to a socket from the initializer's cwd.
+                selected = agent_path if socket_override else shared_path
+                env[variable] = "../runtime/" + selected.name
+                self.assertTrue(selected.is_socket())
+            if connection_env:
+                env.update(connection_env)
             if override is not None:
                 env["DEVCONTAINER_RUNTIME"] = override
             result = subprocess.run(
                 ["/bin/sh", str(SCRIPT)], cwd=root, env=env,
-                capture_output=True, text=True, check=False,
+                capture_output=True, text=True, check=False, timeout=30,
             )
             overlay = root / ".devcontainer/compose.runtime.yaml"
             workspace = root / ".devcontainer/prosecho.code-workspace"
@@ -108,6 +159,14 @@ class InitializeTest(unittest.TestCase):
                     capture_output=True, text=True, check=False,
                 )
             self.assertEqual(log_dir.exists(), (logs and not remove_logs) or logs_file)
+            calls = home / "engine-calls"
+            if calls.exists():
+                self.assertNotIn("ssh-add", calls.read_text())
+                self.assertNotIn("createHostSourceDirs", calls.read_text())
+                if "run --rm" in calls.read_text():
+                    self.assertIn("--pull=never --network=none --read-only", calls.read_text())
+                    self.assertIn("target=/run/developer-ssh-agent.sock,readonly", calls.read_text())
+                    self.assertIn("--entrypoint /bin/sh sha256:", calls.read_text())
             self.assertFalse((root / "work logs").exists())
             self.assertFalse((root / "work-logs").exists())
             self.assertFalse((root / "work logs").is_symlink())
@@ -147,7 +206,7 @@ class InitializeTest(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertIn("Optional OpenCode secrets unavailable", result.stderr)
                     self.assertNotIn("secrets.env", overlay)
-                    self.assertIn("volumes: []", overlay)
+                    self.assertIn("volumes:", overlay)
                     self.assertNotIn("app: {}", overlay)
 
     def test_secrets_file_mount_with_other_optional_mounts(self):
@@ -195,8 +254,8 @@ class InitializeTest(unittest.TestCase):
                     result, overlay = self.initialize(
                         {}, runtime, logs=logs, agent="socket", socket_override=True)
                     self.assertEqual(result.returncode, 0, result.stderr)
-                    self.assertIn("SSH_AUTH_SOCK: /run/prosecho-dev-agent.sock", overlay)
-                    self.assertIn("GIT_SSH_COMMAND: sh /prosecho/.devcontainer/git-ssh.sh", overlay)
+                    self.assertIn("SSH_AUTH_SOCK: /run/developer-ssh-agent.sock", overlay)
+                    self.assertNotIn("GIT_SSH_COMMAND", overlay)
                     self.assertIn("read_only: true", overlay)
                     self.assertIn("create_host_path: false", overlay)
                     self.assertEqual(overlay.count("    volumes:"), 1)
@@ -209,8 +268,8 @@ class InitializeTest(unittest.TestCase):
                 result, overlay = self.initialize(
                     {}, "podman", agent=agent, socket_override=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn("Explicit SSH agent socket unavailable", result.stderr)
-                self.assertNotIn("SSH_AUTH_SOCK", overlay)
+                self.assertIn("selected socket unavailable", result.stderr)
+                self.assertIn("SSH_AUTH_SOCK: ''", overlay)
                 self.assertNotIn("GIT_SSH_COMMAND", overlay)
                 self.assertIn("volumes:", overlay)
 
@@ -219,26 +278,130 @@ class InitializeTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("custom agent''s $$socket'", overlay)
 
-    def test_empty_socket_override_ignores_dedicated_and_shared_sockets(self):
+    def test_empty_socket_override_uses_shared_podman_socket(self):
         result, overlay = self.initialize({}, "podman", agent="socket", socket_override="")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("agent", result.stderr)
-        self.assertNotIn("SSH_AUTH_SOCK", overlay)
+        self.assertIn("SSH_AUTH_SOCK: /run/developer-ssh-agent.sock", overlay)
         self.assertNotIn("GIT_SSH_COMMAND", overlay)
-        self.assertNotIn("agent.sock", overlay)
-        self.assertNotIn("shared.sock", overlay)
+        self.assertNotIn("runtime/prosecho-dev-agent.sock", overlay)
+        self.assertIn("shared.sock", overlay)
 
-    def test_default_ignores_dedicated_and_shared_sockets(self):
+    def test_default_agent_selection(self):
         for runtime in ("docker", "orbstack", "podman"):
             for agent in (None, "file", "socket"):
                 with self.subTest(runtime=runtime, agent=agent):
                     result, overlay = self.initialize({}, runtime, agent=agent)
                     self.assertEqual(result.returncode, 0, result.stderr)
-                    self.assertNotIn("agent", result.stderr)
-                    self.assertNotIn("SSH_AUTH_SOCK", overlay)
+                    self.assertEqual("SSH agent gate" in result.stderr, runtime != "podman")
+                    self.assertEqual("SSH_AUTH_SOCK: ''" in overlay, runtime != "podman")
                     self.assertNotIn("GIT_SSH_COMMAND", overlay)
-                    self.assertNotIn("agent.sock", overlay)
-                    self.assertNotIn("shared.sock", overlay)
+                    self.assertNotIn("runtime/prosecho-dev-agent.sock", overlay)
+                    self.assertEqual("shared.sock" in overlay, runtime == "podman")
+
+    def test_missing_shared_agent_is_optional(self):
+        for shared in (False, "file", "missing"):
+            with self.subTest(shared=shared):
+                result, overlay = self.initialize({}, "podman", shared=shared)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("SSH agent gate", result.stderr)
+                self.assertIn("SSH_AUTH_SOCK: ''", overlay)
+                self.assertIn("volumes: []", overlay)
+
+    def test_orbstack_engine_side_bridge(self):
+        for probe in ("ok", "empty-agent", "missing", "malformed", "timeout"):
+            with self.subTest(probe=probe):
+                started = time.monotonic()
+                result, overlay = self.initialize(
+                    {}, "orbstack", probe=probe, host_os="Darwin")
+                self.assertLess(time.monotonic() - started, 12)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual("source: '/run/host-services/ssh-auth.sock'" in overlay,
+                                 probe in ("ok", "empty-agent"))
+                self.assertEqual("SSH_AUTH_SOCK: ''" in overlay,
+                                 probe not in ("ok", "empty-agent"))
+
+    def test_untrusted_or_unavailable_engine_probes_are_optional(self):
+        for settings in ({"probe_id": "diagnostic"}, {"probe_id": "sha256:bad"},
+                         {"probe_image": False}, {"image_status": 1},
+                         {"context_status": 1}):
+            with self.subTest(settings=settings):
+                result, overlay = self.initialize(
+                    {}, context="orbstack", probe="ok", host_os="Darwin", **settings)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("SSH_AUTH_SOCK: ''", overlay)
+
+    def test_relative_socket_paths_are_rejected(self):
+        for runtime, explicit in (("podman", False), ("podman", True),
+                                  ("docker", True), ("orbstack", True)):
+            with self.subTest(runtime=runtime, explicit=explicit):
+                result, overlay = self.initialize(
+                    {}, runtime, agent="socket", socket_override=explicit, relative=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("socket path must be absolute", result.stderr)
+                self.assertIn("SSH_AUTH_SOCK: ''", overlay)
+                self.assertNotIn("target: /run/developer-ssh-agent.sock", overlay)
+
+    def test_remote_podman_never_mounts_client_sockets(self):
+        for connection_env in ({"CONTAINER_HOST": "ssh://remote"},
+                               {"CONTAINER_HOST": "unix:///run/podman/podman.sock"},
+                               {"CONTAINER_CONNECTION": "remote"}):
+            for explicit in (False, True):
+                with self.subTest(connection_env=connection_env, explicit=explicit):
+                    result, overlay = self.initialize(
+                        {}, "podman", agent="socket", socket_override=explicit,
+                        connection_env=connection_env)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn("agent mounts unsupported", result.stderr)
+                    self.assertIn("SSH_AUTH_SOCK: ''", overlay)
+                    self.assertNotIn("target: /run/developer-ssh-agent.sock", overlay)
+
+    def test_remote_docker_and_orbstack_never_mount_client_sockets(self):
+        for runtime in ("docker", "orbstack"):
+            for settings in (
+                {"docker_host": "tcp://remote:2376"},
+                {"docker_host": "ssh://remote"},
+                {"docker_context": "remote", "endpoint": "ssh://remote"},
+                {"context": "remote", "endpoint": "tcp://remote:2376"},
+                {"context": "orbstack", "endpoint": "ssh://remote"},
+                {"docker_context": "remote", "endpoint_status": 1},
+                {"context": "remote", "endpoint": "diagnostic"},
+            ):
+                for explicit in (False, True):
+                    with self.subTest(runtime=runtime, settings=settings, explicit=explicit):
+                        result, overlay = self.initialize(
+                            {}, runtime, agent="socket", socket_override=explicit, **settings)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertIn("agent mounts unsupported", result.stderr)
+                        self.assertIn("SSH_AUTH_SOCK: ''", overlay)
+                        self.assertNotIn("target: /run/developer-ssh-agent.sock", overlay)
+
+    def test_selected_docker_context(self):
+        for context, env_context, docker_host, expected in (
+            ("orbstack", None, None, True),
+            ("other", None, None, False),
+            ("other", "orbstack", "ssh://remote", True),
+            ("orbstack", "other", None, False),
+            ("orbstack", None, "ssh://remote", False),
+        ):
+            with self.subTest(context=context, env_context=env_context, docker_host=docker_host):
+                result, overlay = self.initialize(
+                    {}, context=context, docker_context=env_context,
+                    docker_host=docker_host, probe="ok", host_os="Darwin")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual("source: '/run/host-services/ssh-auth.sock'" in overlay, expected)
+
+    def test_named_state_and_editor_environment(self):
+        compose = SCRIPT.with_name("compose.yaml").read_text()
+        for name, path in (("data", ".local/share"), ("cache", ".cache")):
+            self.assertIn(f"opencode-{name}:/home/vscode/{path}/opencode", compose)
+            self.assertIn(f"  opencode-{name}:\n", compose)
+        self.assertNotIn("${HOME}", compose)
+        config = json.loads(SCRIPT.with_name("devcontainer.json").read_text())
+        self.assertIs(config["customizations"]["vscode"]["settings"]
+                      ["dev.containers.forwardSSHAgent"], False)
+        self.assertEqual(config["remoteEnv"]["SSH_AUTH_SOCK"], "${containerEnv:SSH_AUTH_SOCK}")
+        self.assertNotIn("workspaceFile", config)
 
     def test_default_services_include_postgres_without_blocking_the_shell(self):
         config = json.loads(SCRIPT.with_name("devcontainer.json").read_text())
@@ -344,7 +507,7 @@ class InitializeTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertNotIn("work-logs", overlay)
                 self.assertEqual(overlay.count("      - type: bind"), 2)
-                self.assertIn("target: /run/prosecho-dev-agent.sock", overlay)
+                self.assertIn("target: /run/developer-ssh-agent.sock", overlay)
                 self.assertIn("target: /home/vscode/.config/opencode/secrets.env", overlay)
 
 

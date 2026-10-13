@@ -99,8 +99,8 @@ manually, always pass `-p prosecho -f .devcontainer/compose.yaml -f
 `127.0.0.1:3100` (container port 3000). Development mounts this repository,
 optional sibling logs and the host OpenCode
 secrets file when present (see [Agent Tools](#agent-tools)). No complete host home
-or container-runtime socket is mounted. VS Code-managed SSH agent forwarding is
-enabled by default: trusted container processes can sign with every loaded host
+or container-runtime socket is mounted. Runtime-selected SSH agent sharing grants
+trusted container processes signing access to every loaded host
 identity, including the user-approved production deployment key. Private keys
 remain on the host. The container can access public networks; source code,
 dependencies, and coding agents must be trusted within that credential boundary.
@@ -110,15 +110,23 @@ Linux x86_64 rootless Podman is locally tested. macOS ARM64 with OrbStack's
 Docker runtime has a user-supplied development workflow report, not independent
 verification here; see [Local Verification](#local-verification) for scope.
 
-For Linux, macOS/OrbStack, and VS Code RemoteSSH agent forwarding, see
-[Developer SSH](docs/developer-ssh.md). No per-key configuration or manual socket
-mount is required for the VS Code default. The forwarding source depends on the
-VS Code connection and client agent environment; it has not yet been verified
-in the current session. Reconnect when ready, possibly recreating the container
-to refresh its old forwarding setting. The Linux GitHub-only one-hour agent helper
-and manual Compose/OrbStack bridge remain opt-in alternatives. Initialization
-mounts an agent only when `PROSECHO_DEV_SSH_AGENT_SOCK` is explicitly nonempty and
-names an existing socket; it never autodetects a dedicated or shared agent.
+For Linux, macOS/OrbStack, and RemoteSSH selection, see
+[Developer SSH](docs/developer-ssh.md). Linux Podman selects the first nonempty
+`PROSECHO_DEV_SSH_AGENT_SOCK` or `SSH_AUTH_SOCK` and validates an actual socket.
+Both require absolute paths. Nonempty Podman `CONTAINER_HOST` or
+`CONTAINER_CONNECTION` suppresses all agent mounts; implicit selection supports
+only a local CLI without silently configured remote mode. Docker context/host
+selection must resolve to a local Unix endpoint; remote or unverified endpoints
+omit even explicit agent mounts, with a warning.
+OrbStack (explicit runtime or selected Docker context) probes its engine-side
+bridge using only a trusted cached image, without pulls or network access.
+Generic Docker supports an explicit valid local socket only. Missing sockets,
+failed probes, or absent probe images warn without blocking the shell. All mounts
+use `/run/developer-ssh-agent.sock`, read-only, with no host-source creation.
+VS Code forwarding is disabled; `remoteEnv` inherits Compose's `SSH_AUTH_SOCK`,
+including an explicit empty value when absent. There is no editor fallback.
+Rerun host initialization with the intended environment and recreate when ready
+to apply changed mounts, after preserving existing OpenCode sessions below.
 
 The Dev Container starts both `app` and local PostgreSQL by default; no database
 profile is required. The shell does not wait for database health or installed gems.
@@ -240,17 +248,28 @@ For a narrower Drive-only alternative, set `PROSECHO_AGENT_SECRETS_FILE` to an
 existing dedicated file outside the checkout and add
 `.devcontainer/compose.agents.yaml` after the runtime overlay; it replaces the
 mount at the same target. Codex and Claude login/state remain separate and are
-not mounted; OpenCode state is also container-local as described below.
+not mounted; OpenCode state uses project-scoped named volumes as described below.
 Without approved Drive access, the launcher reports a blocker instead of
 dumping secrets or bypassing the guidance.
 
 ### OpenCode persistence
 
-OpenCode sessions, authentication, and cache remain container-local. Host
-initialization does not create or mount `${HOME}/.local/share/opencode` or
-`${HOME}/.cache/opencode`. Existing host state is left untouched; no state is
-cleared, copied, or migrated. Container-local sessions do not survive container
-recreation unless separately preserved/exported.
+OpenCode sessions/authentication at `/home/vscode/.local/share/opencode` use
+Compose volume `opencode-data` (`prosecho_opencode-data` with project `prosecho`).
+Its cache at `/home/vscode/.cache/opencode` uses separate `opencode-cache`
+(`prosecho_opencode-cache`). Compose project labels scope both to this project;
+other projects do not share the database. Rebuilds and container recreation retain
+them. `down -v` or volume removal destroys them; do not use those for routine repair.
+
+No host SQLite/state directory is bound, including from the checkout's parent.
+Initialization leaves `${HOME}/.local/share/opencode` and `${HOME}/.cache/opencode`
+untouched. The image pre-creates both target directories owned by `vscode`; empty
+named volumes seed from those image directories. No host ownership repair occurs.
+Existing volumes with incorrect ownership require explicit volume-only repair,
+not running the development shell as root. The V2 installer/version is unchanged.
+Provider authentication and private session content written by OpenCode persist
+in the data volume; trusted container processes can read/use them. Protect backups
+as credentials. The separate host `secrets.env` mount remains optional/read-only.
 
 The generated runtime overlay contains one volumes list for optional logs, SSH,
 and secrets, or an empty list when none are available. The separate `secrets.env`
@@ -261,11 +280,46 @@ image. Read-only secrets still allow credential use as described above.
 Rerun `DEVCONTAINER_RUNTIME=podman sh .devcontainer/initialize.sh` from the host
 repository root (use `docker` or `orbstack` for those runtimes), then rebuild and
 recreate the Dev Container when ready. Restarting does not apply new mounts.
-Sessions already stored only in an existing container's private data directory
-are not automatically transferred; preserve/export any needed sessions before
-recreation. Initialization never recreates or restarts the live container.
+**Before recreating an existing container, preserve its container-private sessions.**
+The previous configuration intentionally removed host state binds; these named
+volumes do not automatically inherit the old container filesystem. Initialization
+never migrates, recreates, or restarts a live session.
+
+#### Manual migration
+
+Schedule migration before recreation. Stop all OpenCode writers to both source
+and destination, including host writers if the old container still binds host
+state. Inspect the actual mounts and data path; do not assume current source
+configuration describes a running container. Back up the complete closed data
+directory, including authentication and SQLite WAL/SHM sidecars, outside the
+checkout with private permissions. Never copy just a live database.
+
+Restore only into an empty `prosecho_opencode-data` volume; do not overwrite or
+merge existing state. Use a trusted cached app image and a temporary, networkless
+volume-only helper with no host binds, credentials, or daemon socket. Copy the
+offline snapshot into that helper, then set the volume directory ownership to
+`vscode:100` and mode `700`. Cache migration is optional.
+
+For Linux rootless Podman, **all** inspection, restore, and verification helpers
+must use the intended app namespace `--userns=keep-id:gid=100`. Inspect the running
+app's `UsernsMode` first; if it differs, resolve the mapping before proceeding.
+Do not mechanically substitute Podman into Docker restore commands or repair
+ownership on the host SQLite source. Root is permitted only for the explicitly
+scheduled volume-only restore, never the development shell.
+
+Before activation, mount each named volume at its normal target using the same
+namespace and verify its UID/GID and writability as `vscode`. Stop on any failed
+check. Do not bind the backup as the live database or activate both old and new
+stores. Keep the old container and protected backup until recovered sessions are
+confirmed. Initialization performs none of these migration operations.
 
 ## Local Verification
+
+The portable initializer has hermetic host regressions for socket selection,
+remote/relative rejection, bounded OrbStack probes, and state preservation.
+Run `python3 .devcontainer/test_initialize.py`; engine calls are stubbed.
+These tests do not establish live editor/RemoteSSH or macOS support, or successful
+migration of an existing database. Preserve live sessions before recreation.
 
 On 2026-10-07, the optional Explorer symlink passed hermetic container lifecycle
 tests (18 tests / 363 assertions), including absent/non-directory mounts, repeated

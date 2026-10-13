@@ -26,8 +26,9 @@ class DeveloperSshTest < Minitest::Test
   def test_default_and_overlay_boundary
     config = JSON.parse(File.read(".devcontainer/devcontainer.json"))
     assert_equal ["compose.yaml", "compose.runtime.yaml"], config.fetch("dockerComposeFile")
-    assert_equal true, config.dig("customizations", "vscode", "settings",
+    assert_equal false, config.dig("customizations", "vscode", "settings",
       "dev.containers.forwardSSHAgent")
+    assert_equal "${containerEnv:SSH_AUTH_SOCK}", config.dig("remoteEnv", "SSH_AUTH_SOCK")
     app = YAML.load_file(".devcontainer/compose.yaml").fetch("services").fetch("app")
     refute app.fetch("environment").key?("SSH_AUTH_SOCK")
     overlay = YAML.load_file(".devcontainer/compose.developer-ssh.yaml").fetch("services")

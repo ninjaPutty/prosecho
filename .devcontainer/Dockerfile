@@ -25,7 +25,8 @@ RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && \
     @opencode/cli@2.0.26 @openai/codex@0.159.1 @anthropic-ai/claude-code@2.1.285 && \
   npm cache clean --force && chmod 755 /usr/local/bin/verify-ai-clis && \
   install -d -m 700 -o vscode -g 100 /home/vscode/.config/opencode \
-    /home/vscode/.cache /home/vscode/.local /home/vscode/.local/share
+    /home/vscode/.cache /home/vscode/.local /home/vscode/.local/share \
+    /home/vscode/.cache/opencode /home/vscode/.local/share/opencode
 ENV DISABLE_AUTOUPDATER=1
 USER vscode
 ENV PATH="/prosecho/bin/prod:/home/vscode/.local/bin:/home/vscode/.local/share/mise/shims:${PATH}"

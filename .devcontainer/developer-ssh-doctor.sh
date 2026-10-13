@@ -7,7 +7,9 @@ case "${1:-}" in
 esac
 
 if [ -z "${SSH_AUTH_SOCK:-}" ] || [ ! -S "$SSH_AUTH_SOCK" ]; then
-  printf '%s\n' 'No developer agent socket. Check forwarding using docs/developer-ssh.md.' >&2
+  printf '%s\n' \
+    'No developer agent socket. Rerun host initialization with the selected agent environment.' \
+    'Recreate when ready to apply mounts; see docs/developer-ssh.md. Shell remains usable.' >&2
   exit 2
 fi
 if ! ssh-add -l; then
