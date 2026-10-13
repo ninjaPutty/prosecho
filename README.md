@@ -103,18 +103,44 @@ must support `--in-pod false`. Compose uses project `prosecho`; if invoking it
 manually, always pass `-p prosecho -f .devcontainer/compose.yaml -f
 .devcontainer/compose.runtime.yaml`. The app is bound to host
 `127.0.0.1:3100` (container port 3000). Development mounts this repository,
-optional sibling logs and the host OpenCode
-secrets file when present (see [Agent Tools](#agent-tools)). No complete host home
+optional sibling logs, approved Prosecho deployment credential files, and the host
+OpenCode secrets file when present (see [Agent Tools](#agent-tools)). No complete host home
 or container-runtime socket is mounted. Runtime-selected SSH agent sharing grants
 trusted container processes signing access to every loaded host
 identity, including the user-approved production deployment key. Private keys
 remain on the host. The container can access public networks; source code,
 dependencies, and coding agents must be trusted within that credential boundary.
-Kamal deployment runs from the ordinary devcontainer with the optional
-[credential overlay](docs/deployment.md); forwarding does not invoke deployment.
+Kamal deployment runs from the ordinary devcontainer with optional credential
+mounts described below and in [Deployment](docs/deployment.md); forwarding does
+not invoke deployment.
 Linux x86_64 rootless Podman is locally tested. macOS ARM64 with OrbStack's
 Docker runtime has a user-supplied development workflow report, not independent
 verification here; see [Local Verification](#local-verification) for scope.
+
+Host initialization automatically mounts existing regular files `app.env` and
+`rock-api-key` from `${HOME}/.local/share/menloparking/prosecho/creds` read-only
+at `/run/prosecho/app.env` and `/run/prosecho/rock-api-key`. Approved file placement
+is the developer opt-in; each file is optional independently. Missing files or
+directories in place of files are silently omitted, never created, and do not
+block the shell. Set `PROSECHO_DEPLOY_CREDENTIALS_DIR` in the host initialization
+environment to an absolute directory to replace the default, or `none` to disable
+both mounts. An invalid override (including empty or relative) warns without
+blocking startup or falling back to the default. Paths with spaces, quotes, and
+dollar signs are escaped. Only these two files are mounted, never the full
+credential directory, private keys, service tokens, or host known-hosts files;
+SSH trust pins are already committed.
+
+Trusted repository code, dependencies, and agents can read and use these authorized
+production credentials. Read-only prevents host-file writes, not production access;
+external mutations still require approval. Keep source files mode 600 in a private
+directory; initialization neither reads their contents nor changes permissions.
+The existing deployment and Rock loaders prefer the mounted paths automatically;
+no getter configuration or `compose.kamal.yaml` overlay is required. That overlay
+remains a manual alternative. Rerun initialization after changing file placement or
+the override, then recreate the Dev Container when ready to apply the mounts.
+Restarting alone does not apply them, and initialization never recreates containers.
+For untrusted work, disable these mounts or remove the authorized source files
+outside the checkout before initialization and recreation.
 
 For Linux, macOS/OrbStack, and RemoteSSH selection, see
 [Developer SSH](docs/developer-ssh.md). Linux Podman selects the first nonempty
@@ -217,7 +243,7 @@ made.
 The development image includes pinned Docker CLI 28.5.2 / Buildx 0.29.1 for
 Kamal's remote-VM builder; no workstation Docker socket is mounted. The user
 SSH config selects the committed production identity and strictly verified host
-pin. The optional deployment credential overlay grants `app` access to runtime
+pin. The optional deployment credential mounts grant `app` access to runtime
 secrets and production Docker through SSH as documented in
 [Deployment](docs/deployment.md). Rebuild to acquire these image additions.
 
@@ -278,8 +304,9 @@ in the data volume; trusted container processes can read/use them. Protect backu
 as credentials. The separate host `secrets.env` mount remains optional/read-only.
 
 The generated runtime overlay contains one volumes list for optional logs, SSH,
-and secrets, or an empty list when none are available. The separate `secrets.env`
-mount remains read-only; the whole host `.config/opencode` directory and
+OpenCode secrets, and deployment credentials, or an empty list when none are
+available. The separate `secrets.env` mount remains read-only; the whole host
+`.config/opencode` directory and
 `.opencode` runtime directory are not mounted. OpenCode remains installed in the
 image. Read-only secrets still allow credential use as described above.
 

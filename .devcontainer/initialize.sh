@@ -119,6 +119,23 @@ if [ -d '../work logs' ]; then
   logs_available=true
 fi
 
+credentials_dir=${PROSECHO_DEPLOY_CREDENTIALS_DIR-${HOME}/.local/share/menloparking/prosecho/creds}
+credentials_files=
+case "$credentials_dir" in
+  none) ;;
+  /*)
+    for file in app.env rock-api-key; do
+      if [ -f "$credentials_dir/$file" ]; then
+        credentials_files="$credentials_files $file"
+      fi
+    done
+    ;;
+  *)
+    printf '%s\n' \
+      'Optional Prosecho credentials directory must be absolute or none; mounts omitted.' >&2
+    ;;
+esac
+
 case "$runtime" in
   podman)
     printf 'services:\n  app:\n    userns_mode: "keep-id:gid=100"\n    security_opt:\n      - label=disable\n' > .devcontainer/compose.runtime.yaml
@@ -149,7 +166,8 @@ else
   printf '%s\n' "      SSH_AUTH_SOCK: ''" >> .devcontainer/compose.runtime.yaml
 fi
 
-if [ "$logs_available" = true ] || [ "$ssh_available" = true ] || [ "$secrets_available" = true ]; then
+if [ "$logs_available" = true ] || [ "$ssh_available" = true ] || \
+    [ "$secrets_available" = true ] || [ -n "$credentials_files" ]; then
   printf '%s\n' '    volumes:' >> .devcontainer/compose.runtime.yaml
 else
   printf '%s\n' '    volumes: []' >> .devcontainer/compose.runtime.yaml
@@ -187,3 +205,14 @@ if [ "$secrets_available" = true ]; then
     '        bind:' \
     '          create_host_path: false' >> .devcontainer/compose.runtime.yaml
 fi
+
+for file in $credentials_files; do
+  source=$(printf '%s' "$credentials_dir/$file" | sed -e "s/'/''/g" -e 's/\$/$$/g')
+  printf '%s\n' \
+    '      - type: bind' \
+    "        source: '$source'" \
+    "        target: /run/prosecho/$file" \
+    '        read_only: true' \
+    '        bind:' \
+    '          create_host_path: false' >> .devcontainer/compose.runtime.yaml
+done

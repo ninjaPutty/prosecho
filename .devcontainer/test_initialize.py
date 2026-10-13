@@ -24,7 +24,7 @@ class InitializeTest(unittest.TestCase):
                        docker_host=None, probe=None, probe_image=True, host_os="Linux",
                         shared=True, probe_id=None, image_status=0, context_status=0,
                         connection_env=None, relative=False, endpoint="unix:///var/run/docker.sock",
-                        endpoint_status=0):
+                         endpoint_status=0, credentials=(), credentials_override=None):
         with tempfile.TemporaryDirectory() as directory:
             parent = Path(directory) / "project with spaces"
             root = parent / "src"
@@ -97,6 +97,17 @@ class InitializeTest(unittest.TestCase):
                 agent_path.touch()
             home = parent / ("home's $config" if special_home else "home")
             home.mkdir()
+            credentials_dir = home / ".local/share/menloparking/prosecho/creds"
+            custom_dir = home / "override's $creds"
+            for directory in ((credentials_dir, custom_dir) if credentials_override == "custom"
+                              else (credentials_dir,)):
+                for name, kind in credentials:
+                    directory.mkdir(parents=True, exist_ok=True)
+                    path = directory / name
+                    if kind == "directory":
+                        path.mkdir()
+                    else:
+                        path.write_text("TEST_FIXTURE=not-a-production-secret\n")
             if existing_state:
                 for path in STATE_PATHS:
                     state = home / path
@@ -126,6 +137,9 @@ class InitializeTest(unittest.TestCase):
                 self.assertTrue(selected.is_socket())
             if connection_env:
                 env.update(connection_env)
+            if credentials_override is not None:
+                env["PROSECHO_DEPLOY_CREDENTIALS_DIR"] = (
+                    str(custom_dir) if credentials_override == "custom" else credentials_override)
             if override is not None:
                 env["DEVCONTAINER_RUNTIME"] = override
             result = subprocess.run(
@@ -175,6 +189,7 @@ class InitializeTest(unittest.TestCase):
             self.assertEqual(agent_path.exists(), agent in ("socket", "file"))
             self.assertEqual(secrets_path.exists(), secrets is not None and not remove_secrets)
             self.assertEqual(secrets_path.parent.exists(), secrets is not None)
+            self.assertEqual(credentials_dir.exists(), bool(credentials))
             if secrets == "directory":
                 self.assertTrue(secrets_path.is_dir())
                 self.assertEqual(list(secrets_path.iterdir()), [])
@@ -208,6 +223,37 @@ class InitializeTest(unittest.TestCase):
                     self.assertNotIn("secrets.env", overlay)
                     self.assertIn("volumes:", overlay)
                     self.assertNotIn("app: {}", overlay)
+
+    def test_optional_deployment_credentials(self):
+        both = (("app.env", "file"), ("rock-api-key", "file"))
+        for fixtures, override, expected in (
+            (both, None, ("app.env", "rock-api-key")),
+            (both[:1], None, ("app.env",)), (both[1:], None, ("rock-api-key",)),
+            ((), None, ()),
+            ((("app.env", "directory"), ("rock-api-key", "directory")), None, ()),
+            (both, "custom", ("app.env", "rock-api-key")),
+            (both, "none", ()), (both, "relative/creds", ()), (both, "", ()),
+        ):
+            with self.subTest(fixtures=fixtures, override=override):
+                result, overlay = self.initialize(
+                    {}, "podman", credentials=fixtures, credentials_override=override,
+                    special_home=True, shared=False)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual("credentials directory must be absolute" in result.stderr,
+                                 override in ("relative/creds", ""))
+                self.assertNotIn("not-a-production-secret", overlay + result.stdout + result.stderr)
+                source = ("override''s $$creds" if override == "custom" else
+                          "home''s $$config/.local/share/menloparking/prosecho/creds")
+                for name in ("app.env", "rock-api-key"):
+                    self.assertEqual(f"target: /run/prosecho/{name}" in overlay, name in expected)
+                    if name in expected:
+                        self.assertIn(f"{source}/{name}'", overlay)
+                        self.assertIn(f"        target: /run/prosecho/{name}\n"
+                                      "        read_only: true\n        bind:\n"
+                                      "          create_host_path: false\n", overlay)
+                self.assertEqual(overlay.count("      - type: bind"), len(expected))
+                if override not in ("relative/creds", ""):
+                    self.assertNotIn("Prosecho credentials", result.stderr)
 
     def test_secrets_file_mount_with_other_optional_mounts(self):
         for runtime in ("docker", "orbstack", "podman"):
