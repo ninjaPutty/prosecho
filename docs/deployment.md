@@ -214,30 +214,70 @@ only records local readiness. This role has not been deployed or verified on pro
 
 ## Lifecycle Contract
 
-The coordinating agent must obtain commit authorization and commit the reviewed changes before
-deployment. No GitHub status, push, or CI service is required. Use the exact full committed SHA, not
-a branch, dirty version, or `latest`:
+The coordinating agent must obtain commit and deployment authorization separately. Only committed
+source is deployed; no GitHub status, push, or CI service is required. Run inside the devcontainer,
+from the root or a subdirectory. The helper finds the repository from its own script path:
 
 ```sh
-bin/prod/deploy check FULL_SHA
-bin/prod/deploy first FULL_SHA
-# For subsequent reviewed, backward-compatible migrations with a verified backup:
-APPROVED_MIGRATION_SHA=FULL_SHA bin/prod/deploy migrate FULL_SHA
-# The retained revision is materialized separately; do not switch the shared checkout:
-bin/prod/deploy check RETAINED_SHA
-ROLLBACK_COMPATIBLE_SHA=RETAINED_SHA bin/prod/deploy rollback RETAINED_SHA
+./bin/prod/deploy --help
+./bin/prod/deploy plan             # Read-only production plan; no full tests
+./bin/prod/deploy check            # Full isolated tests + read-only readiness
+./bin/prod/deploy                  # Normal deployment of committed HEAD
+./bin/prod/deploy release-tag      # Or a branch, short SHA, or full SHA
+./bin/prod/deploy install REF      # Explicit one-time bootstrap only
+# Pending migrations require backup and expand/contract compatibility review:
+./bin/prod/deploy REF --allow-migrations
+# Do not switch the shared checkout to roll back:
+./bin/prod/deploy rollback RETAINED_REF --allow-rollback
 ```
 
-Every invocation materializes the exact commit in a fresh detached clone under a private mode-700
+Except for help, each invocation resolves its ref once using Git to a full immutable commit SHA and
+prints that mapping. Omitted refs default to committed HEAD, except rollback requires an explicit ref.
+Dirty worktrees produce a warning: uncommitted edits are excluded, not deployed. `first` and `migrate`
+are no longer CLI verbs; approval environment variables are no longer used. Approval flags apply only
+to the current invocation and are rejected for unrelated modes. Help needs no container or network.
+
+Each invocation materializes the exact commit in a fresh detached clone under a private mode-700
 operation directory, without hardlinks to the shared repo. The shared checkout can change branches
 or contain other agents' uncommitted work without changing candidate source. The candidate HEAD is
-verified afresh, tracked files become read-only, and `bin/check` runs there. No proof file from
-another invocation is trusted: `first`, `migrate`, and `rollback` repeat checks on their own
+verified afresh and tracked files become read-only. Except for `plan`, `bin/check` runs there after
+cheap preflight. No proof file from another invocation is trusted: deployment, install, and rollback
+repeat checks on their own
 isolated candidate before any target mutation. The clone, checks, Kamal working directory, helper
 PATH, and Kamal scratch/clone directory all belong to this unique operation. The SSH proxy resolves
 `cloudflare-ssh` through that candidate PATH, not through the mutable shared checkout. Kamal still
 builds its own Git clone, not the working directory. Only the operation's own temporary directory is
 removed afterward; no shared source is changed.
+
+Preflight validates pinned client tool versions, the forwarded production identity, both approved
+credential files (including the Rock key), guest Docker access, cleanup-helper availability via
+`--help`, uncertainty-marker absence, capacity, initialization state, and immutable artifact metadata.
+Initialized targets must authenticate as the application database role over TCP and read only
+`schema_migrations` under a read-only session with a statement timeout. The password goes through
+stdin with captured output; no person data is queried. Pending candidate migration filenames are
+reported by comparison with the applied versions. Applied versions missing from a normal candidate
+are a schema mismatch, not permission to downgrade; review an explicit rollback instead.
+
+`check` and `plan` never acquire the deployment/cleanup lock, run cleanup (including `--dry-run`),
+build images, migrate, or activate a release. They report an uninitialized target as requiring explicit
+install, without claiming app-role/schema readiness. `plan` prints planned actions, artifact reuse or
+build, pending migrations, required approval, and that full tests were not run. These unlocked
+read-only snapshots are not a deployment guarantee. Actual operations recheck state under the lock.
+
+Capacity preflight reads numeric available disk and memory KiB without cleanup. Memory below 2 GiB
+is fatal in every mode. Disk below 4 GiB is reported as **NOT READY**: `check` exits nonzero before
+full tests; `plan` still prints the read-only plan, exits successfully, and explicitly reports that
+locked cache recovery is needed and may fail. Plan success is not a readiness assertion.
+Normal deployment and install may continue after migration approval (when needed) and full tests
+to the existing locked cache-recovery protocol. They perform no unlocked cleanup. The helper's
+`LOCKED` handshake requires sufficient capacity after recovery; the client rechecks capacity under
+that same lock before building, and the existing guards remain before migrations and activation.
+Rollback does not defer a low-disk gate to recovery.
+
+Captured probe failures name the status, capacity, app-database/schema, artifact, or retained-container
+gate and give operator checks without printing stdout, stderr, passwords, or protected SQL. Timeout
+and lost-lock diagnoses remain explicit. Missing credential files report approved file provisioning
+instead of filesystem exception details.
 
 Under a VM-side `flock` held by `prosecho-cleanup` for the whole target operation,
 a lightweight guard requires 4 GiB available Docker disk space and 2 GiB
@@ -281,19 +321,25 @@ authenticated **app-role** `SELECT 1`, sending its password via stdin, pulls the
 image-based `db:prepare` once. A `db-prepared` marker makes a failed proxy/switch retry skip
 initialization. Only then does it boot the loopback proxy and run `redeploy --skip-push`. A
 successful origin `/ready` check records the `initialized` marker, through the monitored runner.
-Existing installations reject `first`. Bootstrap retries are idempotent and never delete a database,
+Existing installations reject `install`; normal deployment and rollback reject uninitialized targets.
+Bootstrap retries are idempotent and never delete a database,
 directory, or volume. Changing the administrator secret does not change an already initialized PG
 cluster password; retain the correct original admin credential and use a separately reviewed
 rotation procedure when needed.
 
-Later deployment explicitly runs `db:migrate` in the new image before traffic switching. Review
-expand/contract compatibility with the running and retained versions and verify a backup first; the
-approval environment variable records operator intent, not a migration-safety proof. Pending
+Later deployment skips `db:migrate` when no migrations are pending. Otherwise it stops before tests
+or lock acquisition unless `--allow-migrations` is supplied, then runs migrations in the new image
+before traffic switching. Initialization and applied versions are queried again under the lock before
+build/database phases; newly pending migrations still require approval. Review expand/contract
+compatibility with running and retained versions and verify a backup first; the flag records operator
+intent, not a migration-safety proof. Pending
 migrations cause 503, so noncompatible schema changes need a separately reviewed maintenance
 procedure.
 
-Rollback requires a retained container and explicit schema-compatibility review,
-then uses `kamal rollback` without builds or reverse migrations. First install
+Rollback requires an explicit ref, retained recorded artifact/container, and `--allow-rollback` after
+schema-compatibility review, then uses `kamal rollback` without builds or reverse migrations.
+Newer already-applied schema versions are allowed only in this explicit rollback path; a rollback
+candidate that needs unapplied migrations is refused. First install
 has no previous app to roll back to: leave PG/data/artifacts intact, diagnose,
 and retry the same recorded SHA. Never automate database restore or down
 migrations. These helpers never remove accessories or run `kamal setup`; failed

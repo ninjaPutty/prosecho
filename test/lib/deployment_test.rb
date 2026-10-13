@@ -7,8 +7,320 @@ load File.expand_path("../../bin/prod/deploy", __dir__) unless defined?(Prosecho
 class DeploymentTest < ActiveSupport::TestCase
   SHA = "a" * 40
 
+  test "CLI defaults and approvals are invocation scoped and reject obsolete verbs" do
+    assert_equal "HEAD", ProsechoDeploy.options([])[:ref]
+    %w[HEAD main v1.0 abc1234].each do |ref|
+      assert_equal ref, ProsechoDeploy.options([ref])[:ref]
+    end
+    assert ProsechoDeploy.options(["--allow-migrations"])[:allow_migrations]
+    assert_equal "rollback", ProsechoDeploy.options(["rollback", SHA, "--allow-rollback"])[:mode]
+    [["first", SHA], ["migrate", SHA], ["rollback"], ["rollback", SHA],
+      ["check", "--allow-migrations"], ["install", "--allow-rollback"],
+      ["--force"], ["--upload-pack=evil"], ["HEAD", "main"]].each do |args|
+      assert_raises(ProsechoDeploy::Failure) { ProsechoDeploy.options(args) }
+    end
+    ProsechoDeploy::Runner.stub(:new, -> { flunk "Help must not execute commands" }) do
+      File.stub(:exist?, false) do
+        output, = capture_io { ProsechoDeploy.main(["--help"]) }
+        assert_includes output, "Usage:"
+      end
+    end
+  end
+
+  test "check and plan only probe production and check alone runs local tests" do
+    [["check", false], ["plan", false], ["deploy", false],
+      ["check", true], ["plan", true], ["deploy", true], ["install", true]].each do |mode, low_disk|
+      commands = []
+      runner = Object.new
+      runner.define_singleton_method(:run) do |*command, **options|
+        commands << [command, options]
+        case command
+        when %w[bundle exec kamal version] then "2.12.0"
+        when %w[docker --version] then "28.5.2,"
+        when %w[docker buildx version] then "v0.29.1 "
+        when %w[cloudflared --version] then "2026.5.2 "
+        when ["ssh", ProsechoDeploy::HOST, ProsechoDeploy::STATUS]
+          (mode == "install") ? "new" : "initialized"
+        when ["ssh", ProsechoDeploy::HOST, ProsechoDeploy::CAPACITY_METADATA]
+          low_disk ? "1024 2097152" : "4194304 2097152"
+        when ["ssh", ProsechoDeploy::HOST, ProsechoDeploy::SCHEMA] then ""
+        else
+          if command.include?("rev-parse")
+            SHA
+          else
+            ((command.last == ProsechoDeploy.artifact_script(SHA)) ? "new" : "")
+          end
+        end
+      end
+      candidate = ->(_source, sha, &block) {
+        assert_equal SHA, sha
+        block.call(runner)
+      }
+      old_host = ENV["DOCKER_HOST"]
+      deployed = []
+      begin
+        ENV["DOCKER_HOST"] = ProsechoDeploy::DOCKER_HOST
+        ProsechoDeploy::Runner.stub(:new, runner) do
+          ProsechoDeploy.stub(:with_candidate, candidate) do
+            ProsechoDeploy.stub(:verify_identity!, nil) do
+              ProsechoDeploy.stub(:clean_sha!, nil) do
+                ProsechoDeploy.stub(:read_secrets, {"PGPASSWORD" => "synthetic-password"}) do
+                  ProsechoDeploy.stub(:read_rock_key, "synthetic-rock") do
+                    File.stub(:exist?, true) do
+                      ProsechoDeploy.stub(:deploy, ->(*args, **_flags) { deployed << args.first }) do
+                        IO.stub(:popen, ->(*) { flunk "Preflight must not acquire a lock" }) do
+                          output, = capture_io do
+                            if mode == "deploy" && !low_disk
+                              error = assert_raises(ProsechoDeploy::Failure) { ProsechoDeploy.main(["main"]) }
+                              assert_includes error.message, "--allow-migrations"
+                            elsif mode == "check" && low_disk
+                              assert_raises(ProsechoDeploy::Failure) { ProsechoDeploy.main([mode, "main"]) }
+                            elsif mode == "deploy"
+                              ProsechoDeploy.main(["main", "--allow-migrations"])
+                            else
+                              ProsechoDeploy.main([mode, "main"])
+                            end
+                          end
+                          assert_not_includes output, "synthetic-password"
+                          assert_includes output, "Tests not run" if mode == "plan"
+                          assert_includes output, "Capacity: NOT READY" if low_disk
+                        end
+                      end
+                    end
+                  end
+                end
+              end
+            end
+          end
+        end
+      ensure
+        old_host ? ENV["DOCKER_HOST"] = old_host : ENV.delete("DOCKER_HOST")
+      end
+      assert_equal((mode == "check" && !low_disk) || (low_disk && %w[deploy install].include?(mode)),
+        commands.any? { |command, _| command == ["bin/check"] })
+      assert_equal((low_disk && %w[deploy install].include?(mode)) ? [mode] : [], deployed)
+      remote = commands.select { |command, _| command.first == "ssh" }
+      assert remote.all? { |command, _|
+        [ProsechoDeploy::STATUS, ProsechoDeploy::SCHEMA,
+          ProsechoDeploy::CAPACITY_METADATA, ProsechoDeploy.artifact_script(SHA)].include?(command.last)
+      }
+      schema = remote.find { |command, _| command.last == ProsechoDeploy::SCHEMA }
+      unless mode == "install"
+        assert_equal "synthetic-password\n", schema.last[:input]
+        assert schema.last[:capture]
+      end
+      assert_includes ProsechoDeploy::SCHEMA, "default_transaction_read_only=on"
+    end
+  end
+
+  test "readiness authenticates schema and rejects implicit installation or downgrade" do
+    runner = Object.new
+    status = "initialized"
+    applied = "20200101000000\n"
+    runner.define_singleton_method(:run) do |*command, **_options|
+      case command.last
+      when ProsechoDeploy::STATUS then status
+      when ProsechoDeploy::CAPACITY_METADATA then "4194304 2097152"
+      when ProsechoDeploy::SCHEMA then applied
+      else "new"
+      end
+    end
+    secrets = {"PGPASSWORD" => "synthetic-password"}
+    Dir.stub(:glob, ["db/migrate/20200101000000_old.rb", "db/migrate/20200102000000_new.rb"]) do
+      state = ProsechoDeploy.readiness("check", SHA, runner, secrets)
+      assert_equal ["db/migrate/20200102000000_new.rb"], state[:pending]
+      assert_raises(ProsechoDeploy::Failure) { ProsechoDeploy.readiness("install", SHA, runner, secrets) }
+      applied = "20200103000000\n"
+      assert_raises(ProsechoDeploy::Failure) { ProsechoDeploy.readiness("deploy", SHA, runner, secrets) }
+      status = "new"
+      assert_raises(ProsechoDeploy::Failure) { ProsechoDeploy.readiness("deploy", SHA, runner, secrets) }
+      assert_not ProsechoDeploy.readiness("plan", SHA, runner, secrets)[:initialized]
+    end
+  end
+
+  test "migration approval rejects new pending migrations on the locked recheck before build" do
+    state = {initialized: true, artifact: "new", pending: ["db/migrate/20200101000000_new.rb"]}
+    error = assert_raises(ProsechoDeploy::Failure) { ProsechoDeploy.approve_migrations!(SHA, state, false) }
+    assert_includes error.message, SHA
+    assert_includes error.message, "--allow-migrations"
+    ProsechoDeploy.approve_migrations!(SHA, state, true)
+    reader, writer = IO.pipe
+    writer.puts "LOCKED"
+    writer.flush
+    runner = ProsechoDeploy::Runner.new
+    begin
+      IO.stub(:popen, reader) do
+        ProsechoDeploy.stub(:readiness, ->(*) {
+          assert_equal reader, runner.lock
+          state
+        }) do
+          ProsechoDeploy.stub(:phases, ->(*) { flunk "Unapproved locked schema must not build" }) do
+            reader.stub(:pid, 999999999) do
+              assert_raises(ProsechoDeploy::Failure) { ProsechoDeploy.deploy("deploy", SHA, runner, {}) }
+            end
+          end
+        end
+      end
+      assert_nil runner.lock
+    ensure
+      reader.close unless reader.closed?
+      writer.close
+    end
+  end
+
+  test "rollback permits newer applied schema but requires retained artifact and no pending schema" do
+    commands = []
+    artifact = "sha256:" + "b" * 64
+    runner = Object.new
+    runner.define_singleton_method(:run) do |*command, **_options|
+      commands << command
+      case command.last
+      when ProsechoDeploy::STATUS then "initialized"
+      when ProsechoDeploy::CAPACITY_METADATA then "4194304 2097152"
+      when ProsechoDeploy::SCHEMA then "20200101000000\n20200102000000\n"
+      when ProsechoDeploy.artifact_script(SHA) then artifact
+      else ""
+      end
+    end
+    Dir.stub(:glob, ["db/migrate/20200101000000_old.rb"]) do
+      state = ProsechoDeploy.readiness("rollback", SHA, runner, {"PGPASSWORD" => "synthetic"})
+      assert_empty state[:pending]
+      assert commands.any? { |command| command.last == "docker inspect prosecho-web-#{SHA} >/dev/null" }
+      artifact = "new"
+      assert_raises(ProsechoDeploy::Failure) do
+        ProsechoDeploy.readiness("rollback", SHA, runner, {"PGPASSWORD" => "synthetic"})
+      end
+    end
+    artifact = "sha256:" + "b" * 64
+    Dir.stub(:glob, ["db/migrate/20200103000000_unapplied.rb"]) do
+      assert_raises(ProsechoDeploy::Failure) do
+        ProsechoDeploy.readiness("rollback", SHA, runner, {"PGPASSWORD" => "synthetic"})
+      end
+    end
+  end
+
+  test "missing credential files have actionable sanitized failures" do
+    %i[read_secrets read_rock_key].each do |method|
+      error = assert_raises(ProsechoDeploy::Failure) { ProsechoDeploy.public_send(method, "/nonexistent/private-file") }
+      assert_includes error.message, "approved"
+      assert_not_includes error.message, "/nonexistent/private-file"
+    end
+  end
+
+  test "status shell validates markers and tools without creating or changing state" do
+    cases = [
+      [nil, nil, nil, true, "new"],
+      ["initialized", :file, nil, true, "initialized"],
+      ["db-prepared", :file, nil, true, "new"],
+      *%w[cleanup-inflight cleanup-uncertain].product([:file, :link]).map { |name, kind|
+        [name, kind, nil, false, ""]
+      },
+      *%w[initialized db-prepared].product([:directory, :link]).map { |name, kind|
+        [name, kind, nil, false, ""]
+      },
+      *%w[prosecho-cleanup docker].product([:missing, :failing]).map { |name, kind|
+        [nil, nil, [name, kind], false, ""]
+      }
+    ]
+    cases.each do |marker, kind, broken, success, expected|
+      Dir.mktmpdir do |directory|
+        home = File.join(directory, "home")
+        tools = File.join(directory, "tools")
+        FileUtils.mkdir_p([home, tools])
+        {"prosecho-cleanup" => "--help", "docker" => "info"}.each do |name, arguments|
+          next if broken == [name, :missing]
+          path = File.join(tools, name)
+          script = (broken == [name, :failing]) ? "exit 1" : "test \"$*\" = #{arguments}"
+          File.write(path, "#!/bin/sh\n#{script}\n", perm: 0o700)
+        end
+        if marker
+          state = File.join(home, ".local/share/prosecho")
+          FileUtils.mkdir_p(state)
+          path = File.join(state, marker)
+          case kind
+          when :file then File.write(path, "")
+          when :directory then Dir.mkdir(path)
+          when :link then File.symlink("missing-target", path)
+          end
+        end
+        snapshot = -> {
+          Dir.glob("#{home}/**/*", File::FNM_DOTMATCH).map { |path|
+            stat = File.lstat(path)
+            [path, stat.ftype, stat.size, stat.mtime]
+          }
+        }
+        before = snapshot.call
+        output, _error, status = Open3.capture3({"HOME" => home, "PATH" => tools},
+          "/bin/sh", "-c", ProsechoDeploy::STATUS)
+        assert_equal success, status.success?, [marker, kind, broken].inspect
+        assert_equal expected, output
+        assert_equal before, snapshot.call, "STATUS must not write even an absent state directory"
+      end
+    end
+  end
+
+  test "preflight failures label the gate without exposing captured details" do
+    gates = {
+      ProsechoDeploy::STATUS => "Production status check failed",
+      ProsechoDeploy::CAPACITY_METADATA => "Production capacity metadata check failed",
+      ProsechoDeploy::SCHEMA => "App database authentication/schema metadata check failed",
+      ProsechoDeploy.artifact_script(SHA) => "Artifact metadata check failed",
+      "docker inspect prosecho-web-#{SHA} >/dev/null" => "Retained rollback container check failed"
+    }
+    gates.each do |failed, label|
+      runner = Object.new
+      runner.define_singleton_method(:run) do |*command, **_options|
+        raise ProsechoDeploy::Failure, "synthetic-secret SQL stderr" if command.last == failed
+        case command.last
+        when ProsechoDeploy::STATUS then "initialized"
+        when ProsechoDeploy::CAPACITY_METADATA then "4194304 2097152"
+        when ProsechoDeploy::SCHEMA then ""
+        else "sha256:" + "b" * 64
+        end
+      end
+      Dir.stub(:glob, []) do
+        error = assert_raises(ProsechoDeploy::Failure) do
+          ProsechoDeploy.readiness("rollback", SHA, runner, {"PGPASSWORD" => "synthetic-secret"})
+        end
+        assert error.message.start_with?(label)
+        assert_not_includes error.message, "synthetic-secret"
+      end
+    end
+  end
+
+  test "low memory is fatal and disk must recover before locked deployment phases" do
+    capacity = "1024 2097152"
+    status = "initialized"
+    secrets = {"PGPASSWORD" => "synthetic"}
+    runner = Object.new
+    runner.define_singleton_method(:run) do |*command, **_options|
+      case command.last
+      when ProsechoDeploy::STATUS then status
+      when ProsechoDeploy::CAPACITY_METADATA then capacity
+      when ProsechoDeploy::SCHEMA then ""
+      else "new"
+      end
+    end
+    Dir.stub(:glob, []) do
+      state = ProsechoDeploy.readiness("deploy", SHA, runner, secrets, allow_disk_recovery: true)
+      assert state[:low_disk]
+      error = assert_raises(ProsechoDeploy::Failure) { ProsechoDeploy.readiness("deploy", SHA, runner, secrets) }
+      assert_includes error.message, "after locked recovery"
+      capacity = "4194304 2097152"
+      assert_not ProsechoDeploy.readiness("deploy", SHA, runner, secrets)[:low_disk]
+      capacity = "4194304 2097151"
+      %w[check plan deploy install].each do |mode|
+        status = (mode == "install") ? "new" : "initialized"
+        error = assert_raises(ProsechoDeploy::Failure) do
+          ProsechoDeploy.readiness(mode, SHA, runner, secrets, allow_disk_recovery: true)
+        end
+        assert_includes error.message, "memory below 2 GiB"
+      end
+    end
+  end
+
   test "first install waits and prepares once before starting proxy and switching" do
-    commands = ProsechoDeploy.phases("first", SHA)
+    commands = ProsechoDeploy.phases("install", SHA)
     text = commands.map { |command| command.join(" ") }
     wait = text.index { |command| command.include?("SELECT 1") }
     prepare = text.index { |command| command.include?("db:prepare") }
@@ -24,9 +336,10 @@ class DeploymentTest < ActiveSupport::TestCase
   end
 
   test "later deploy requires explicit migration without reinitializing accessories" do
-    text = ProsechoDeploy.phases("migrate", SHA).map { |command| command.join(" ") }
+    text = ProsechoDeploy.phases("deploy", SHA, migrate: true).map { |command| command.join(" ") }
     assert text.any? { |command| command.include?("db:migrate") }
     assert text.none? { |command| command.match?(/db:prepare|proxy boot|accessory boot|prune/) }
+    assert ProsechoDeploy.phases("deploy", SHA).none? { |command| command.join(" ").include?("db:migrate") }
   end
 
   test "rollback verifies a retained container and never builds or migrates" do
@@ -57,7 +370,7 @@ class DeploymentTest < ActiveSupport::TestCase
   end
 
   test "remote shell programs have valid syntax" do
-    [ProsechoDeploy::LOCK, ProsechoDeploy::DATABASE_WAIT, ProsechoDeploy.artifact_script(SHA), ProsechoDeploy.artifact_script(SHA, record: true), *ProsechoDeploy.phases("first", SHA).select { |command| command.include?("ssh") }.map(&:last)].each do |script|
+    [ProsechoDeploy::LOCK, ProsechoDeploy::STATUS, ProsechoDeploy::CAPACITY_METADATA, ProsechoDeploy::SCHEMA, ProsechoDeploy::DATABASE_WAIT, ProsechoDeploy.artifact_script(SHA), ProsechoDeploy.artifact_script(SHA, record: true), *ProsechoDeploy.phases("install", SHA).select { |command| command.include?("ssh") }.map(&:last)].each do |script|
       _output, status = Open3.capture2("sh", "-n", stdin_data: script)
       assert status.success?, script
     end
@@ -90,8 +403,10 @@ class DeploymentTest < ActiveSupport::TestCase
   end
 
   test "deployment preflight uses the forwarded deployment key without retired credentials" do
+    commands = []
     runner = Object.new
     runner.define_singleton_method(:run) do |*command, **_options|
+      commands << command
       case command
       when %w[bundle exec kamal version] then "2.12.0"
       when %w[docker --version] then "Docker version 28.5.2,"
@@ -99,25 +414,33 @@ class DeploymentTest < ActiveSupport::TestCase
       when %w[cloudflared --version] then "2026.5.2 "
       when %w[ssh-add -L]
         "ssh-ed25519 unrelated-public-key\nssh-ed25519 fake-public-key\n"
+      else
+        command.include?("rev-parse") ? SHA : " M README.md"
       end
     end
     candidate = ->(_source, _sha, &block) { block.call(runner) }
     secrets = {"PGPASSWORD" => "fake-app-password"}
     deployed = []
-    old_env = ENV.to_h.slice("APPROVED_MIGRATION_SHA", "DOCKER_HOST")
+    old_env = ENV.to_h.slice("DOCKER_HOST")
     begin
-      ENV["APPROVED_MIGRATION_SHA"] = SHA
       ENV["DOCKER_HOST"] = ProsechoDeploy::DOCKER_HOST
-      ProsechoDeploy.stub(:with_candidate, candidate) do
-        ProsechoDeploy.stub(:clean_sha!, nil) do
-          ProsechoDeploy.stub(:read_secrets, secrets) do
-            ProsechoDeploy.stub(:deploy, ->(*args) { deployed << args }) do
-              File.stub(:read, "ssh-ed25519 fake-public-key\n") do
-                File.stub(:stat, ->(path) { flunk "Unexpected credential stat: #{path}" }) do
-                  # The release suite itself runs in an isolated temporary clone;
-                  # model the user entrypoint's working directory separately.
-                  Dir.stub(:pwd, "/prosecho") do
-                    ProsechoDeploy.main(["migrate", SHA])
+      state = {initialized: true, artifact: "new", pending: []}
+      ProsechoDeploy::Runner.stub(:new, runner) do
+        ProsechoDeploy.stub(:with_candidate, candidate) do
+          ProsechoDeploy.stub(:clean_sha!, nil) do
+            ProsechoDeploy.stub(:read_secrets, secrets) do
+              ProsechoDeploy.stub(:read_rock_key, "synthetic-rock-key") do
+                ProsechoDeploy.stub(:readiness, state) do
+                  ProsechoDeploy.stub(:deploy, ->(*args, **flags) { deployed << [args, flags] }) do
+                    File.stub(:read, "ssh-ed25519 fake-public-key\n") do
+                      File.stub(:stat, ->(path) { flunk "Unexpected credential stat: #{path}" }) do
+                        File.stub(:exist?, true) do
+                          output, warning = capture_io { ProsechoDeploy.main([]) }
+                          assert_includes output, "HEAD"
+                          assert_includes warning, "uncommitted changes are excluded"
+                        end
+                      end
+                    end
                   end
                 end
               end
@@ -125,9 +448,12 @@ class DeploymentTest < ActiveSupport::TestCase
           end
         end
       end
-      assert_equal [["migrate", SHA, runner, secrets]], deployed
+      assert_equal [[["deploy", SHA, runner, secrets], {allow_migrations: false}]], deployed
+      resolution = commands.select { |command| command.include?("--end-of-options") }
+      assert_equal [["git", "-C", ProsechoDeploy::SOURCE, "rev-parse", "--verify",
+        "--end-of-options", "HEAD^{commit}"]], resolution
     ensure
-      %w[APPROVED_MIGRATION_SHA DOCKER_HOST].each do |key|
+      %w[DOCKER_HOST].each do |key|
         old_env.key?(key) ? ENV[key] = old_env[key] : ENV.delete(key)
       end
     end
@@ -382,7 +708,7 @@ class DeploymentTest < ActiveSupport::TestCase
     assert_includes sql, "\\gexec"
     assert_includes sql, "log_statement = 'none'"
     assert_raises(ProsechoDeploy::Failure) { ProsechoDeploy.bootstrap_sql("quote'; injection") }
-    text = ProsechoDeploy.phases("first", SHA).map { |command| command.join(" ") }
+    text = ProsechoDeploy.phases("install", SHA).map { |command| command.join(" ") }
     assert_operator text.index { |command| command.start_with?("bootstrap ") }, :<, text.index { |command| command.start_with?("app-query ") }
     assert text.none? { |command| command.include?("a" * 64) || command.include?("PGADMINPASSWORD") }
     assert_includes text.find { |command| command.start_with?("app-query ") }, "-U prosecho"

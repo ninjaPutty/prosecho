@@ -4,10 +4,12 @@ require "fileutils"
 require "tmpdir"
 require "timeout"
 require "json"
+require "optparse"
 
 module ProsechoDeploy
   HOST = "prosecho-deploy-cloudflare"
   DOCKER_HOST = "ssh://deploy@#{HOST}"
+  SOURCE = File.expand_path("../..", __dir__).freeze
   class Failure < StandardError; end
 
   # Captures and mutations share the same lock checks, deadline and cancellation.
@@ -73,6 +75,14 @@ module ProsechoDeploy
     test "$(df -Pk "$root" | awk 'NR==2 {print $4}')" -ge 4194304
     test "$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)" -ge 2097152
   SH
+  CAPACITY_METADATA = <<~SH.freeze
+    set -eu
+    root=$(docker info --format '{{.DockerRootDir}}')
+    disk=$(df -Pk "$root")
+    disk=$(printf '%s\n' "$disk" | awk 'NR==2 {print $4}')
+    memory=$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)
+    printf '%s %s\n' "$disk" "$memory"
+  SH
   POSTGRES_WAIT = <<~SH.freeze
     set -eu
     for i in $(seq 1 60); do
@@ -90,6 +100,35 @@ module ProsechoDeploy
       sleep 2
     done
     exit 1
+  SH
+  STATUS = <<~SH.freeze
+    set -eu
+    prosecho-cleanup --help >/dev/null
+    docker info >/dev/null
+    for marker in cleanup-inflight cleanup-uncertain; do
+      test ! -e "$HOME/.local/share/prosecho/$marker"
+      test ! -L "$HOME/.local/share/prosecho/$marker"
+    done
+    for marker in initialized db-prepared; do
+      test ! -L "$HOME/.local/share/prosecho/$marker"
+      if test -e "$HOME/.local/share/prosecho/$marker"; then
+        test -f "$HOME/.local/share/prosecho/$marker"
+      fi
+    done
+    if test -f "$HOME/.local/share/prosecho/initialized"; then
+      printf initialized
+    else
+      printf new
+    fi
+  SH
+  SCHEMA = <<~SH.freeze
+    set -eu
+    docker exec -i prosecho-postgres sh -c '
+      IFS= read -r PGPASSWORD
+      export PGPASSWORD PGOPTIONS="-c default_transaction_read_only=on -c statement_timeout=10000"
+      exec psql -X -q -w -v ON_ERROR_STOP=1 -h 127.0.0.1 -U prosecho \
+        -d prosecho_production -Atc "SELECT version FROM schema_migrations ORDER BY version"
+    '
   SH
 
   def self.clean_sha!(sha, runner = Runner.new)
@@ -161,10 +200,15 @@ module ProsechoDeploy
       raise Failure, "Rock key must contain one nonempty printable token"
     end
     key
+  rescue SystemCallError
+    raise Failure, "Cannot read Rock key file; provision an approved regular mode-600 file"
   end
 
   def self.read_secrets(file)
-    raise Failure, "app.env must be mode 600" unless File.stat(file).mode & 0o777 == 0o600
+    stat = File.lstat(file)
+    unless stat.file? && stat.mode & 0o777 == 0o600 && stat.size <= 4096
+      raise Failure, "app.env must be a bounded regular file with mode 600"
+    end
     lines = File.readlines(file, chomp: true)
     keys = %w[KAMAL_REGISTRY_PASSWORD SECRET_KEY_BASE PGPASSWORD PGADMINPASSWORD]
     raise Failure, "app.env requires exactly four unique unquoted KEY=value lines" unless lines.size == 4 && lines.map { |line| line.split("=", 2).first }.sort == keys.sort && lines.all? { |line| line.match?(/\A[A-Z_]+=[A-Za-z0-9._-]+\z/) }
@@ -174,6 +218,8 @@ module ProsechoDeploy
     end
     raise Failure, "Database admin and app passwords must differ" if secrets["PGPASSWORD"] == secrets["PGADMINPASSWORD"]
     secrets
+  rescue SystemCallError
+    raise Failure, "Cannot read app.env; provision the approved four-key mode-600 file"
   end
 
   def self.verify_identity!(runner)
@@ -219,7 +265,7 @@ module ProsechoDeploy
     SH
   end
 
-  def self.phases(mode, sha)
+  def self.phases(mode, sha, migrate: false)
     kamal = ["bundle", "exec", "kamal"]
     commands = []
     if mode == "rollback"
@@ -227,7 +273,7 @@ module ProsechoDeploy
       commands << [*kamal, "rollback", sha]
     else
       commands << [*kamal, "build", "push", "--version", sha]
-      if mode == "first"
+      if mode == "install"
         commands << ["ssh", HOST, "docker network inspect kamal >/dev/null 2>&1 || docker network create kamal"]
         commands << [*kamal, "accessory", "boot", "postgres", "--version", sha]
         commands << ["ssh", HOST, POSTGRES_WAIT]
@@ -235,19 +281,19 @@ module ProsechoDeploy
       end
       commands << ["app-query", "ssh", HOST, DATABASE_WAIT]
       commands << [*kamal, "build", "pull", "--version", sha]
-      task = (mode == "first") ? "db:prepare" : "db:migrate"
+      task = (mode == "install") ? "db:prepare" : "db:migrate"
       database = "docker run --rm -i --network kamal --env-file /dev/stdin -e PGHOST=prosecho-postgres -e PGUSER=prosecho -e PGDATABASE=prosecho_production 127.0.0.1:5555/prosecho:#{sha} bin/rails #{task}"
-      database = "test -f ~/.local/share/prosecho/db-prepared || { #{database} && touch ~/.local/share/prosecho/db-prepared; }" if mode == "first"
-      commands << ["database", "ssh", HOST, database]
-      commands << [*kamal, "proxy", "boot", "--version", sha] if mode == "first"
+      database = "test -f ~/.local/share/prosecho/db-prepared || { #{database} && touch ~/.local/share/prosecho/db-prepared; }" if mode == "install"
+      commands << ["database", "ssh", HOST, database] if mode == "install" || migrate
+      commands << [*kamal, "proxy", "boot", "--version", sha] if mode == "install"
       commands << [*kamal, "redeploy", "--skip-push", "--version", sha]
     end
     commands << ["ssh", HOST, "curl --max-time 10 --fail --silent --show-error -H 'Host: prosecho.menloparking.com' http://127.0.0.1:8080/ready"]
-    commands << ["ssh", HOST, "touch ~/.local/share/prosecho/initialized"] if mode == "first"
+    commands << ["ssh", HOST, "touch ~/.local/share/prosecho/initialized"] if mode == "install"
     commands
   end
 
-  def self.deploy(mode, sha, runner, secrets)
+  def self.deploy(mode, sha, runner, secrets, allow_migrations: false)
     lock = IO.popen(["ssh", HOST, LOCK], "r+", pgroup: true)
     begin
       begin
@@ -256,12 +302,10 @@ module ProsechoDeploy
         raise Failure, "Target lock/capacity check timed out"
       end
       runner.lock = lock
-      initialized = runner.run("ssh", HOST, "if test -f ~/.local/share/prosecho/initialized; then printf initialized; else printf new; fi", capture: true, timeout: 30) == "initialized"
-      raise Failure, "First install only; initialized marker exists" if mode == "first" && initialized
-      raise Failure, "First install must finish before migrations/rollback" if mode != "first" && !initialized
-      artifact = runner.run("ssh", HOST, artifact_script(sha), capture: true, timeout: 30)
-      raise Failure, "Rollback artifact is missing" if mode == "rollback" && artifact == "new"
-      phases(mode, sha).each do |command|
+      state = readiness(mode, sha, runner, secrets)
+      approve_migrations!(sha, state, allow_migrations) if mode == "deploy"
+      artifact = state.fetch(:artifact)
+      phases(mode, sha, migrate: state.fetch(:pending).any?).each do |command|
         clean_sha!(sha, runner)
         push = command[0, 5] == %w[bundle exec kamal build push]
         next if push && artifact != "new"
@@ -306,29 +350,156 @@ module ProsechoDeploy
     end
   end
 
-  def self.main(args)
-    mode, sha = args
-    raise Failure, "Usage: bin/prod/deploy check|first|migrate|rollback FULL_SHA" unless args.length == 2 && %w[check first migrate rollback].include?(mode)
-    container = File.exist?("/.dockerenv") || File.exist?("/run/.containerenv")
-    raise Failure, "Run inside the Prosecho devcontainer at /prosecho" unless Dir.pwd == "/prosecho" && container
-    trap("TERM") { raise Interrupt }
-    with_candidate(Dir.pwd, sha) do |runner|
-      runner.run("bin/check", timeout: 600)
-      clean_sha!(sha, runner)
-      puts "Checked isolated candidate #{sha}"
-      next if mode == "check"
-      if mode == "rollback"
-        raise Failure, "Review schema compatibility and set ROLLBACK_COMPATIBLE_SHA" unless ENV["ROLLBACK_COMPATIBLE_SHA"] == sha
-      elsif mode == "migrate"
-        raise Failure, "Review migrations/backups and set APPROVED_MIGRATION_SHA" unless ENV["APPROVED_MIGRATION_SHA"] == sha
+  def self.approve_migrations!(sha, state, allowed)
+    return if state.fetch(:pending).empty? || allowed || !state.fetch(:initialized)
+    raise Failure, "#{state.fetch(:pending).size} pending migrations for #{sha}; review backups/compatibility, then rerun bin/prod/deploy #{sha} --allow-migrations"
+  end
+
+  def self.options(args)
+    args = args.dup
+    mode = %w[check plan install rollback].include?(args.first) ? args.shift : "deploy"
+    options = {mode: mode, allow_migrations: false, allow_rollback: false}
+    parser = OptionParser.new do |cli|
+      cli.banner = "Usage: bin/prod/deploy [REF]\n       bin/prod/deploy check|plan|install [REF]\n       bin/prod/deploy rollback REF --allow-rollback"
+      cli.separator "REF defaults to committed HEAD; accepts a branch, tag or SHA."
+      cli.separator "check: full tests + read-only readiness; plan: readiness without tests/build."
+      cli.separator "install: explicit one-time bootstrap; rollback: retained image, no down migrations."
+      cli.on("--allow-migrations", "Deploy only: approve pending migrations after backup/schema review") { options[:allow_migrations] = true }
+      cli.on("--allow-rollback", "Rollback only: approve retained revision's schema compatibility") { options[:allow_rollback] = true }
+      cli.on("-h", "--help", "Show help without container or network access") { options[:help] = true }
+    end
+    parser.parse!(args)
+    return options.merge(help: parser.to_s) if options[:help]
+    raise Failure, "Expected at most one Git ref; first/migrate verbs were replaced by install/default deployment" if args.size > 1 || %w[first migrate].include?(args.first)
+    raise Failure, "--allow-migrations is only valid for normal deployment" if options[:allow_migrations] && mode != "deploy"
+    raise Failure, "--allow-rollback is only valid for rollback" if options[:allow_rollback] && mode != "rollback"
+    if mode == "rollback" && (args.empty? || !options[:allow_rollback])
+      raise Failure, "Rollback requires REF and --allow-rollback after schema compatibility review"
+    end
+    options.merge(ref: args.first || "HEAD")
+  rescue OptionParser::ParseError
+    raise Failure, "Invalid option; run bin/prod/deploy --help"
+  end
+
+  def self.preflight_probe(runner, message, script, input: nil)
+    runner.run("ssh", HOST, script, input: input, capture: true, timeout: 30)
+  rescue Failure, SystemCallError => error
+    detail = if error.message.start_with?("Target lock connection lost")
+      "; target lock connection lost; no new phase allowed; inspect remote state"
+    elsif error.message.start_with?("Command timed out")
+      "; timed out; inspect remote state"
+    else
+      ""
+    end
+    raise Failure, message + detail
+  end
+
+  def self.readiness(mode, sha, runner, secrets, allow_disk_recovery: false)
+    status = preflight_probe(runner,
+      "Production status check failed; verify SSH/Docker, cleanup --help and state markers", STATUS)
+    raise Failure, "Invalid production initialization status" unless %w[new initialized].include?(status)
+    initialized = status == "initialized"
+    raise Failure, "Install refused: initialized marker exists" if mode == "install" && initialized
+    if %w[deploy rollback].include?(mode) && !initialized
+      raise Failure, "Production is uninitialized; use explicit bin/prod/deploy install #{sha}"
+    end
+    capacity = preflight_probe(runner,
+      "Production capacity metadata check failed; verify Docker storage and /proc/meminfo",
+      CAPACITY_METADATA)
+    unless capacity.match?(/\A[0-9]+ [0-9]+\z/)
+      raise Failure, "Production capacity metadata invalid; expected disk and memory KiB"
+    end
+    disk, memory = capacity.split.map(&:to_i)
+    raise Failure, "Production memory below 2 GiB; provision capacity before deployment" if memory < 2097152
+    low_disk = disk < 4194304
+    if low_disk && !allow_disk_recovery && !%w[check plan].include?(mode)
+      raise Failure, "Production disk below 4 GiB after locked recovery; provision storage"
+    end
+    applied = []
+    if initialized
+      versions = preflight_probe(runner,
+        "App database authentication/schema metadata check failed; verify app.env, connectivity and schema",
+        SCHEMA, input: phase_input("app-query", secrets))
+      applied = versions.lines.map(&:strip)
+      unless applied.all? { |version| version.match?(/\A[0-9]{1,14}\z/) } && applied.uniq == applied
+        raise Failure, "Invalid applied migration metadata"
       end
+    end
+    files = Dir.glob("db/migrate/[0-9]*_*.rb").sort
+    versions = files.map { |file| File.basename(file).split("_", 2).first }
+    unless versions.all? { |version| version.match?(/\A[0-9]{1,14}\z/) } && versions.uniq == versions
+      raise Failure, "Invalid candidate migration versions"
+    end
+    missing = applied - versions
+    if missing.any? && mode != "rollback"
+      raise Failure, "Schema mismatch: #{missing.size} applied migrations absent from #{sha}; review explicit rollback instead"
+    end
+    artifact = preflight_probe(runner,
+      "Artifact metadata check failed; verify loopback registry and immutable digest records",
+      artifact_script(sha))
+    if mode == "rollback"
+      raise Failure, "Rollback artifact is missing" if artifact == "new"
+      preflight_probe(runner,
+        "Retained rollback container check failed; verify the canonical retained container",
+        "docker inspect prosecho-web-#{sha} >/dev/null")
+    end
+    pending = files.reject { |file| applied.include?(File.basename(file).split("_", 2).first) }
+    if mode == "rollback" && pending.any?
+      raise Failure, "Rollback candidate has unapplied migrations; rollback never migrates the database"
+    end
+    {initialized: initialized, artifact: artifact, pending: pending, low_disk: low_disk}
+  end
+
+  def self.main(args)
+    options = options(args)
+    if options[:help]
+      puts options[:help]
+      return
+    end
+    mode = options.fetch(:mode)
+    container = File.exist?("/.dockerenv") || File.exist?("/run/.containerenv")
+    raise Failure, "Run inside the Prosecho devcontainer" unless container
+    source_runner = Runner.new
+    sha = source_runner.run("git", "-C", SOURCE, "rev-parse", "--verify",
+      "--end-of-options", "#{options.fetch(:ref)}^{commit}", capture: true).freeze
+    raise Failure, "Git ref must resolve to a full committed SHA" unless sha.match?(/\A[0-9a-f]{40}\z/)
+    puts "Candidate #{options.fetch(:ref).inspect} -> #{sha}"
+    unless source_runner.run("git", "-C", SOURCE, "status", "--porcelain", capture: true).empty?
+      warn "Dirty worktree: uncommitted changes are excluded; using committed #{sha}"
+    end
+    trap("TERM") { raise Interrupt }
+    with_candidate(SOURCE, sha) do |runner|
       ENV["DOCKER_HOST"] ||= DOCKER_HOST
       raise Failure, "Remote Docker host required" unless ENV["DOCKER_HOST"] == DOCKER_HOST
       [[%w[bundle exec kamal version], "2.12.0"], [%w[docker --version], "28.5.2,"], [%w[docker buildx version], "v0.29.1 "], [%w[cloudflared --version], "2026.5.2 "]].each do |command, version|
         raise Failure, "Deployment tool version mismatch" unless runner.run(*command, capture: true, timeout: 30).include?(version)
       end
       verify_identity!(runner)
-      deploy(mode, sha, runner, read_secrets(secrets_file))
+      secrets = read_secrets(secrets_file)
+      read_rock_key
+      state = readiness(mode, sha, runner, secrets,
+        allow_disk_recovery: %w[deploy install].include?(mode))
+      puts "Production: #{state[:initialized] ? "initialized; app-role schema authenticated" : "uninitialized; explicit install required (no app-role schema proof)"}"
+      puts "Artifact: #{(state[:artifact] == "new") ? "build required" : "reuse recorded digest #{state[:artifact]}"}"
+      puts "Pending migrations: #{state[:pending].size}"
+      state[:pending].each { |file| puts "  #{file}" }
+      if state[:low_disk]
+        puts "Capacity: NOT READY; disk below 4 GiB. Locked cache recovery needed; success not guaranteed."
+        puts "Read-only preflight performed no cleanup."
+        raise Failure, "Production readiness not ready: disk below 4 GiB" if mode == "check"
+      end
+      if mode == "plan"
+        puts "Tests not run; no build, lock, cleanup or target mutation."
+        puts "Actions: #{state[:initialized] ? "build/reuse, pull, optional migrate, redeploy, health verification" : "explicit install: bootstrap, prepare, proxy, redeploy, health verification"}"
+        puts "Approval required: --allow-migrations after backup/schema review" if state[:initialized] && state[:pending].any?
+        next
+      end
+      approve_migrations!(sha, state, options[:allow_migrations]) if mode == "deploy"
+      runner.run("bin/check", timeout: 600)
+      clean_sha!(sha, runner)
+      puts "Checked isolated candidate #{sha}"
+      next if mode == "check"
+      deploy(mode, sha, runner, secrets, allow_migrations: options[:allow_migrations])
     end
   end
 end

@@ -475,3 +475,11 @@ Tailwind CSS; `/lookbook` returned 404. Kamal 2.12.0 configuration and guarded d
 are documented in [Deployment](docs/deployment.md). Local verification is not a successful
 production deployment claim; VM, registry, Cloudflare, and other architectures require separate
 verification.
+
+Inside the devcontainer, `./bin/prod/deploy` deploys committed HEAD, or accepts a Git ref resolved
+once to an immutable SHA. `./bin/prod/deploy check [REF]` runs isolated tests and read-only production
+readiness; `./bin/prod/deploy plan [REF]` reports the plan without full tests or production mutations.
+Bootstrap is explicit with `install [REF]`. Pending migrations require `--allow-migrations` after
+backup/schema review; rollback requires `rollback REF --allow-rollback` and a retained artifact.
+Dirty edits are warned about and excluded. `--help` works without container or network access.
+See the [lifecycle contract](docs/deployment.md#lifecycle-contract) before authorizing deployment.
