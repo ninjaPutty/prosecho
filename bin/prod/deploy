@@ -306,7 +306,7 @@ module ProsechoDeploy
     commands
   end
 
-  def self.deploy(mode, sha, runner, secrets, allow_migrations: false)
+  def self.deploy(mode, sha, runner, secrets, allow_migrations: true)
     lock = IO.popen(["ssh", HOST, LOCK], "r+", pgroup: true)
     begin
       begin
@@ -365,26 +365,27 @@ module ProsechoDeploy
 
   def self.approve_migrations!(sha, state, allowed)
     return if state.fetch(:pending).empty? || allowed || !state.fetch(:initialized)
-    raise Failure, "#{state.fetch(:pending).size} pending migrations for #{sha}; review backups/compatibility, then rerun bin/prod/deploy #{sha} --allow-migrations"
+    raise Failure, "#{state.fetch(:pending).size} pending migrations for #{sha}; --no-migrations refuses deployment with pending migrations"
   end
 
   def self.options(args)
     args = args.dup
     mode = %w[check plan install rollback].include?(args.first) ? args.shift : "deploy"
-    options = {mode: mode, allow_migrations: false, allow_rollback: false}
+    options = {mode: mode, allow_migrations: true, allow_rollback: false}
     parser = OptionParser.new do |cli|
       cli.banner = "Usage: bin/prod/deploy [REF]\n       bin/prod/deploy check|plan|install [REF]\n       bin/prod/deploy rollback REF --allow-rollback"
       cli.separator "REF defaults to committed HEAD; accepts a branch, tag or SHA."
       cli.separator "check: full tests + read-only readiness; plan: readiness without tests/build."
       cli.separator "install: explicit one-time bootstrap; rollback: retained image, no down migrations."
-      cli.on("--allow-migrations", "Deploy only: approve pending migrations after backup/schema review") { options[:allow_migrations] = true }
+      cli.separator "Normal deployment: pending migrations run by default; verify a backup and schema compatibility."
+      cli.on("--no-migrations", "Deploy only: refuse deployment if migrations are pending") { options[:allow_migrations] = false }
       cli.on("--allow-rollback", "Rollback only: approve retained revision's schema compatibility") { options[:allow_rollback] = true }
       cli.on("-h", "--help", "Show help without container or network access") { options[:help] = true }
     end
     parser.parse!(args)
     return options.merge(help: parser.to_s) if options[:help]
     raise Failure, "Expected at most one Git ref; first/migrate verbs were replaced by install/default deployment" if args.size > 1 || %w[first migrate].include?(args.first)
-    raise Failure, "--allow-migrations is only valid for normal deployment" if options[:allow_migrations] && mode != "deploy"
+    raise Failure, "--no-migrations is only valid for normal deployment" if !options[:allow_migrations] && mode != "deploy"
     raise Failure, "--allow-rollback is only valid for rollback" if options[:allow_rollback] && mode != "rollback"
     if mode == "rollback" && (args.empty? || !options[:allow_rollback])
       raise Failure, "Rollback requires REF and --allow-rollback after schema compatibility review"
@@ -563,7 +564,10 @@ module ProsechoDeploy
       if mode == "plan"
         puts "Tests not run; no build, lock, cleanup or target mutation."
         puts "Actions: #{state[:initialized] ? "build/reuse, pull, optional migrate, redeploy, health verification" : "explicit install: bootstrap, prepare, proxy, redeploy, health verification"}"
-        puts "Approval required: --allow-migrations after backup/schema review" if state[:initialized] && state[:pending].any?
+        if state[:initialized] && state[:pending].any?
+          puts "Normal deployment: pending migrations run by default before traffic switching."
+          puts "Before deploying: verify a backup and review expand/contract schema compatibility."
+        end
         next
       end
       approve_migrations!(sha, state, options[:allow_migrations]) if mode == "deploy"

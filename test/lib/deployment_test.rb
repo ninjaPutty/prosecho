@@ -9,27 +9,39 @@ class DeploymentTest < ActiveSupport::TestCase
 
   test "CLI defaults and approvals are invocation scoped and reject obsolete verbs" do
     assert_equal "HEAD", ProsechoDeploy.options([])[:ref]
+    assert ProsechoDeploy.options([])[:allow_migrations]
     %w[HEAD main v1.0 abc1234].each do |ref|
       assert_equal ref, ProsechoDeploy.options([ref])[:ref]
     end
-    assert ProsechoDeploy.options(["--allow-migrations"])[:allow_migrations]
+    assert_not ProsechoDeploy.options(["--no-migrations"])[:allow_migrations]
+    assert ProsechoDeploy.options([])[:allow_migrations], "Flags must not leak between invocations"
     assert_equal "rollback", ProsechoDeploy.options(["rollback", SHA, "--allow-rollback"])[:mode]
     [["first", SHA], ["migrate", SHA], ["rollback"], ["rollback", SHA],
-      ["check", "--allow-migrations"], ["install", "--allow-rollback"],
+      ["--allow-migrations"], ["install", "--allow-rollback"],
       ["--force"], ["--upload-pack=evil"], ["HEAD", "main"]].each do |args|
       assert_raises(ProsechoDeploy::Failure) { ProsechoDeploy.options(args) }
+    end
+    %w[check plan install rollback].each do |mode|
+      error = assert_raises(ProsechoDeploy::Failure) do
+        ProsechoDeploy.options([mode, SHA, "--no-migrations"])
+      end
+      assert_includes error.message, "--no-migrations is only valid for normal deployment"
     end
     ProsechoDeploy::Runner.stub(:new, -> { flunk "Help must not execute commands" }) do
       File.stub(:exist?, false) do
         output, = capture_io { ProsechoDeploy.main(["--help"]) }
         assert_includes output, "Usage:"
+        assert_includes output, "--no-migrations"
+        assert_includes output, "pending migrations run by default"
+        assert_not_includes output, "--allow-migrations"
       end
     end
   end
 
   test "check and plan only probe production and check alone runs local tests" do
     [["check", false], ["plan", false], ["deploy", false],
-      ["check", true], ["plan", true], ["deploy", true], ["install", true]].each do |mode, low_disk|
+      ["check", true], ["plan", true], ["deploy", true], ["install", true],
+      ["deploy", false, true]].each do |mode, low_disk, no_migrations|
       commands = []
       runner = Object.new
       runner.define_singleton_method(:run) do |*command, **options|
@@ -72,22 +84,32 @@ class DeploymentTest < ActiveSupport::TestCase
                 ProsechoDeploy.stub(:read_secrets, {"PGPASSWORD" => "synthetic-password"}) do
                   ProsechoDeploy.stub(:read_rock_key, "synthetic-rock") do
                     File.stub(:exist?, true) do
-                      ProsechoDeploy.stub(:deploy, ->(*args, **_flags) { deployed << args.first }) do
+                      ProsechoDeploy.stub(:deploy, ->(*args, **flags) {
+                        assert flags[:allow_migrations]
+                        deployed << args.first
+                      }) do
                         IO.stub(:popen, ->(*) { flunk "Preflight must not acquire a lock" }) do
                           output, = capture_io do
-                            if mode == "deploy" && !low_disk
-                              error = assert_raises(ProsechoDeploy::Failure) { ProsechoDeploy.main(["main"]) }
-                              assert_includes error.message, "--allow-migrations"
+                            if no_migrations
+                              error = assert_raises(ProsechoDeploy::Failure) do
+                                ProsechoDeploy.main(["main", "--no-migrations"])
+                              end
+                              assert_includes error.message, "--no-migrations"
                             elsif mode == "check" && low_disk
                               assert_raises(ProsechoDeploy::Failure) { ProsechoDeploy.main([mode, "main"]) }
                             elsif mode == "deploy"
-                              ProsechoDeploy.main(["main", "--allow-migrations"])
+                              ProsechoDeploy.main(["main"])
                             else
                               ProsechoDeploy.main([mode, "main"])
                             end
                           end
                           assert_not_includes output, "synthetic-password"
-                          assert_includes output, "Tests not run" if mode == "plan"
+                          if mode == "plan"
+                            assert_includes output, "Tests not run"
+                            assert_includes output, "pending migrations run by default"
+                            assert_includes output, "verify a backup"
+                            assert_not_includes output, "Approval required"
+                          end
                           assert_includes output, "Capacity: NOT READY" if low_disk
                         end
                       end
@@ -101,9 +123,9 @@ class DeploymentTest < ActiveSupport::TestCase
       ensure
         old_host ? ENV["DOCKER_HOST"] = old_host : ENV.delete("DOCKER_HOST")
       end
-      assert_equal((mode == "check" && !low_disk) || (low_disk && %w[deploy install].include?(mode)),
+      assert_equal((mode == "check" && !low_disk) || (%w[deploy install].include?(mode) && !no_migrations),
         commands.any? { |command, _| command == ["bin/check"] })
-      assert_equal((low_disk && %w[deploy install].include?(mode)) ? [mode] : [], deployed)
+      assert_equal((%w[deploy install].include?(mode) && !no_migrations) ? [mode] : [], deployed)
       remote = commands.select { |command, _| command.first == "ssh" }
       assert remote.all? { |command, _|
         [ProsechoDeploy::STATUS, ProsechoDeploy::SCHEMA,
@@ -143,12 +165,13 @@ class DeploymentTest < ActiveSupport::TestCase
     end
   end
 
-  test "migration approval rejects new pending migrations on the locked recheck before build" do
+  test "no migrations rejects new pending migrations on the locked recheck before build" do
     state = {initialized: true, artifact: "new", pending: ["db/migrate/20200101000000_new.rb"]}
     error = assert_raises(ProsechoDeploy::Failure) { ProsechoDeploy.approve_migrations!(SHA, state, false) }
     assert_includes error.message, SHA
-    assert_includes error.message, "--allow-migrations"
+    assert_includes error.message, "--no-migrations"
     ProsechoDeploy.approve_migrations!(SHA, state, true)
+    ProsechoDeploy.approve_migrations!(SHA, state.merge(pending: []), false)
     reader, writer = IO.pipe
     writer.puts "LOCKED"
     writer.flush
@@ -159,9 +182,11 @@ class DeploymentTest < ActiveSupport::TestCase
           assert_equal reader, runner.lock
           state
         }) do
-          ProsechoDeploy.stub(:phases, ->(*) { flunk "Unapproved locked schema must not build" }) do
+          ProsechoDeploy.stub(:phases, ->(*) { flunk "--no-migrations must reject changed schema before build" }) do
             reader.stub(:pid, 999999999) do
-              assert_raises(ProsechoDeploy::Failure) { ProsechoDeploy.deploy("deploy", SHA, runner, {}) }
+              assert_raises(ProsechoDeploy::Failure) do
+                ProsechoDeploy.deploy("deploy", SHA, runner, {}, allow_migrations: false)
+              end
             end
           end
         end
@@ -170,6 +195,46 @@ class DeploymentTest < ActiveSupport::TestCase
     ensure
       reader.close unless reader.closed?
       writer.close
+    end
+  end
+
+  test "default locked deployment migrates only when the fresh schema has pending versions" do
+    [[], ["db/migrate/20200101000000_new.rb"]].each do |pending|
+      lock = Object.new
+      replies = ["LOCKED\n", "RECORDED\n", "CLEANED\n"]
+      lock.define_singleton_method(:gets) { replies.shift }
+      lock.define_singleton_method(:puts) { |*| }
+      lock.define_singleton_method(:flush) {}
+      lock.define_singleton_method(:closed?) { true }
+      commands = []
+      runner = ProsechoDeploy::Runner.new
+      runner.define_singleton_method(:run) do |*command, **_options|
+        commands << command
+        "sha256:" + "b" * 64
+      end
+      runner.define_singleton_method(:check_lock!) {}
+      state = {initialized: true, artifact: "new", pending: pending}
+      IO.stub(:popen, lock) do
+        ProsechoDeploy.stub(:readiness, ->(*) {
+          assert_equal lock, runner.lock
+          state
+        }) do
+          ProsechoDeploy.stub(:clean_sha!, nil) do
+            ProsechoDeploy.deploy("deploy", SHA, runner,
+              {"PGPASSWORD" => "synthetic", "SECRET_KEY_BASE" => "synthetic"})
+          end
+        end
+      end
+      migration = commands.index { |command| command.last.include?("db:migrate") }
+      activation = commands.index { |command| command.include?("redeploy") }
+      assert activation
+      if pending.empty?
+        assert_nil migration, "No pending versions must skip migration SQL"
+      else
+        assert migration
+        assert_operator migration, :<, activation
+      end
+      assert_nil runner.lock
     end
   end
 
@@ -340,7 +405,7 @@ class DeploymentTest < ActiveSupport::TestCase
     assert_includes text.first, "build push --version #{SHA}"
   end
 
-  test "later deploy requires explicit migration without reinitializing accessories" do
+  test "later deploy migrates pending versions without reinitializing accessories" do
     text = ProsechoDeploy.phases("deploy", SHA, migrate: true).map { |command| command.join(" ") }
     assert text.any? { |command| command.include?("db:migrate") }
     assert text.none? { |command| command.match?(/db:prepare|proxy boot|accessory boot|prune/) }
@@ -463,7 +528,7 @@ class DeploymentTest < ActiveSupport::TestCase
           end
         end
       end
-      assert_equal [[["deploy", SHA, runner, secrets], {allow_migrations: false}]], deployed
+      assert_equal [[["deploy", SHA, runner, secrets], {allow_migrations: true}]], deployed
       resolution = commands.select { |command| command.include?("--end-of-options") }
       assert_equal [["git", "-C", ProsechoDeploy::SOURCE, "rev-parse", "--verify",
         "--end-of-options", "HEAD^{commit}"]], resolution

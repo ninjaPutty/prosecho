@@ -239,11 +239,11 @@ from the root or a subdirectory. The helper finds the repository from its own sc
 ./bin/prod/deploy --help
 ./bin/prod/deploy plan             # Read-only production plan; no full tests
 ./bin/prod/deploy check            # Full isolated tests + read-only readiness
-./bin/prod/deploy                  # Normal deployment of committed HEAD
+./bin/prod/deploy                  # Deploy committed HEAD, applying pending migrations
 ./bin/prod/deploy release-tag      # Or a branch, short SHA, or full SHA
 ./bin/prod/deploy install REF      # Explicit one-time bootstrap only
-# Pending migrations require backup and expand/contract compatibility review:
-./bin/prod/deploy REF --allow-migrations
+# To refuse deployment when migrations are pending:
+./bin/prod/deploy REF --no-migrations
 # Do not switch the shared checkout to roll back:
 ./bin/prod/deploy rollback RETAINED_REF --allow-rollback
 ```
@@ -251,8 +251,10 @@ from the root or a subdirectory. The helper finds the repository from its own sc
 Except for help, each invocation resolves its ref once using Git to a full immutable commit SHA and
 prints that mapping. Omitted refs default to committed HEAD, except rollback requires an explicit ref.
 Dirty worktrees produce a warning: uncommitted edits are excluded, not deployed. `first` and `migrate`
-are no longer CLI verbs; approval environment variables are no longer used. Approval flags apply only
-to the current invocation and are rejected for unrelated modes. Help needs no container or network.
+are no longer CLI verbs; approval environment variables are no longer used. `--no-migrations` applies
+only to normal deployment and is rejected for `install`, `check`, `plan`, and `rollback`.
+`--allow-rollback` applies only to rollback. Flags apply only to the current invocation.
+Help needs no container or network.
 
 Each invocation materializes the exact commit in a fresh detached clone under a private mode-700
 operation directory, without hardlinks to the shared repo. The shared checkout can change branches
@@ -290,14 +292,15 @@ resolution; dependency fetching, build execution, and publication remain later d
 `check` and `plan` never acquire the deployment/cleanup lock, run cleanup (including `--dry-run`),
 build images, migrate, or activate a release. They report an uninitialized target as requiring explicit
 install, without claiming app-role/schema readiness. `plan` prints planned actions, artifact reuse or
-build, pending migrations, required approval, and that full tests were not run. These unlocked
-read-only snapshots are not a deployment guarantee. Actual operations recheck state under the lock.
+build, pending migrations that normal deployment runs by default, a backup/schema-review advisory,
+and that full tests were not run. These unlocked read-only snapshots are not a deployment guarantee.
+Actual operations recheck state under the lock.
 
 Capacity preflight reads numeric available disk and memory KiB without cleanup. Memory below 2 GiB
 is fatal in every mode. Disk below 4 GiB is reported as **NOT READY**: `check` exits nonzero before
 full tests; `plan` still prints the read-only plan, exits successfully, and explicitly reports that
 locked cache recovery is needed and may fail. Plan success is not a readiness assertion.
-Normal deployment and install may continue after migration approval (when needed) and full tests
+Normal deployment and install may continue after the applicable migration-policy gate and full tests
 to the existing locked cache-recovery protocol. They perform no unlocked cleanup. The helper's
 `LOCKED` handshake requires sufficient capacity after recovery; the client rechecks capacity under
 that same lock before building, and the existing guards remain before migrations and activation.
@@ -356,14 +359,18 @@ directory, or volume. Changing the administrator secret does not change an alrea
 cluster password; retain the correct original admin credential and use a separately reviewed
 rotation procedure when needed.
 
-Later deployment skips `db:migrate` when no migrations are pending. Otherwise it stops before tests
-or lock acquisition unless `--allow-migrations` is supplied, then runs migrations in the new image
-before traffic switching. Initialization and applied versions are queried again under the lock before
-build/database phases; newly pending migrations still require approval. Review expand/contract
-compatibility with running and retained versions and verify a backup first; the flag records operator
-intent, not a migration-safety proof. Pending
-migrations cause 503, so noncompatible schema changes need a separately reviewed maintenance
-procedure.
+Later deployment skips `db:migrate` when no migrations are pending. Otherwise normal deployment runs
+migrations in the new image before traffic switching by default. `--no-migrations` refuses a pending
+candidate before local tests or lock acquisition; it never skips required migrations and boots an
+unsafe release. Initialization and applied versions are queried again under the lock before
+build/database phases. The same policy is enforced there, so newly pending migrations discovered
+after local tests also stop `--no-migrations` before building or mutating the release.
+
+The default is the operator's migration-approval policy, not proof of migration safety or backup
+existence. Review expand/contract compatibility with running and retained versions and verify a
+backup manually before deployment. The helper neither creates backups nor enforces a machine receipt
+of backup verification. Pending migrations cause 503, so noncompatible schema changes need a
+separately reviewed maintenance procedure.
 
 Rollback requires an explicit ref, retained recorded artifact/container, and `--allow-rollback` after
 schema-compatibility review, then uses `kamal rollback` without builds or reverse migrations.
@@ -515,6 +522,13 @@ because its PID disappeared, or use a timer to clear it. If daemon activity cann
 be established confidently, retain the marker and stop deployments/cleanup.
 
 ## Local Verification
+
+On 2026-10-13, the default-migration policy passed focused deployment regressions
+(6 tests / 174 assertions) and full `bin/check` (267 tests / 1,943 assertions), with no failures,
+errors, or skips, in the existing Linux app container. Tests cover default migration permission,
+normal-only `--no-migrations`, rejection before tests and on the locked schema recheck, pending-only
+migration execution before activation, and read-only plan output. Target commands and credentials
+were synthetic; no live deployment, production SQL, or backup verification was performed.
 
 On 2026-10-13, the private Docker configuration and metadata gates passed `bin/check`
 in the existing Linux app container: 264 tests / 1,865 assertions, no failures, errors, or skips.
