@@ -9,6 +9,8 @@ require "optparse"
 module ProsechoDeploy
   HOST = "prosecho-deploy-cloudflare"
   DOCKER_HOST = "ssh://deploy@#{HOST}"
+  OPERATION_ENV = %w[BUNDLE_GEMFILE BUILDX_BUILDER BUILDX_CONFIG DOCKER_CONFIG
+    DOCKER_CONTEXT DOCKER_HOST PATH TMPDIR].freeze
   SOURCE = File.expand_path("../..", __dir__).freeze
   class Failure < StandardError; end
 
@@ -139,6 +141,9 @@ module ProsechoDeploy
 
   def self.with_candidate(source, sha)
     raise Failure, "Use a full lowercase 40-character committed SHA" unless sha&.match?(/\A[0-9a-f]{40}\z/)
+    if ENV.key?("DOCKER_HOST") && ENV["DOCKER_HOST"] != DOCKER_HOST
+      raise Failure, "Remote Docker host required; DOCKER_HOST must select the pinned Prosecho SSH alias"
+    end
     runner = Runner.new
     expected = runner.run("git", "-C", source, "rev-parse", "#{sha}^{commit}", capture: true)
     raise Failure, "Candidate commit mismatch" unless expected == sha
@@ -146,8 +151,16 @@ module ProsechoDeploy
       candidate = File.join(operation, "candidate")
       runner.run("git", "clone", "--no-local", "--no-checkout", source, candidate, capture: true)
       runner.run("git", "-C", candidate, "checkout", "--detach", sha, capture: true)
-      old_env = ENV.to_h.slice("PATH", "TMPDIR", "BUNDLE_GEMFILE")
+      old_env = ENV.to_h.slice(*OPERATION_ENV)
       begin
+        # Public build inputs must not invoke a stale editor credential helper.
+        # Never copy caller auth, context metadata or builder selections into this operation.
+        docker_config = File.join(operation, "docker")
+        Dir.mkdir(docker_config, 0o700)
+        File.write(File.join(docker_config, "config.json"), "{}\n", perm: 0o600)
+        ENV["DOCKER_CONFIG"] = docker_config
+        ENV["DOCKER_HOST"] = DOCKER_HOST
+        %w[BUILDX_BUILDER BUILDX_CONFIG DOCKER_CONTEXT].each { |key| ENV.delete(key) }
         ENV["PATH"] = ([File.join(candidate, "bin/prod")] + ENV.fetch("PATH").split(":").reject { |path| path.start_with?(source + "/") }).join(":")
         ENV["TMPDIR"] = operation
         ENV["BUNDLE_GEMFILE"] = File.join(candidate, "Gemfile")
@@ -161,7 +174,7 @@ module ProsechoDeploy
           clean_sha!(sha, runner)
         end
       ensure
-        %w[PATH TMPDIR BUNDLE_GEMFILE].each { |key| old_env.key?(key) ? ENV[key] = old_env[key] : ENV.delete(key) }
+        OPERATION_ENV.each { |key| old_env.key?(key) ? ENV[key] = old_env[key] : ENV.delete(key) }
       end
     end
   end
@@ -394,6 +407,64 @@ module ProsechoDeploy
     raise Failure, message + detail
   end
 
+  def self.public_frontend_ref
+    dockerfile = File.read("Dockerfile")
+    frontend = dockerfile.lines.first&.strip&.match(/\A#\s*syntax=(?:docker.io\/)?(docker\/dockerfile:1)\z/)
+    ruby_version = File.read(".ruby-version").strip.delete_prefix("ruby-")
+    # Tokenize horizontal instruction whitespace; tabs must not hide another base or ARG.
+    # Continuations, inline comments and unsupported instruction forms fail this narrow contract.
+    instructions = dockerfile.lines.filter_map do |line|
+      match = line.chomp.match(/\A[ \t]*(FROM|ARG)(?:[ \t]+(.*))?\z/i)
+      [match[1].upcase, match[2].to_s.strip.split(/[ \t]+/)] if match
+    end
+    arguments = instructions.filter_map { |instruction, values| values if instruction == "ARG" }
+    bases = instructions.filter_map { |instruction, values| values if instruction == "FROM" }
+    unless frontend && ruby_version.match?(/\A[0-9]+\.[0-9]+\.[0-9]+\z/) &&
+        arguments == [["RUBY_VERSION=#{ruby_version}"]] &&
+        bases == [["docker.io/library/ruby:${RUBY_VERSION}-slim", "AS", "base"],
+          ["base", "AS", "build"], ["base"]]
+      raise Failure, "Public build input contract changed; private bases require a dedicated authenticated context"
+    end
+    "docker.io/#{frontend[1]}"
+  end
+
+  def self.build_preflight(runner)
+    frontend = public_frontend_ref
+    gate = "Default builder endpoint/driver check failed; verify pinned SSH Docker access"
+    begin
+      # Buildx 0.29.1 inspect has no --format; do not bootstrap or create a builder.
+      builder = runner.run("docker", "buildx", "inspect", "--builder", "default",
+        capture: true, timeout: 30)
+      context = JSON.parse(runner.run("docker", "context", "inspect", "default",
+        capture: true, timeout: 30))
+      unless builder.scan(/^Driver:\s*(\S+)$/).flatten == ["docker"] &&
+          builder.scan(/^Endpoint:\s*(\S+)$/).flatten == ["default"] &&
+          context.is_a?(Array) && context.size == 1 &&
+          context.first.is_a?(Hash) && context.first.dig("Endpoints", "docker", "Host") == DOCKER_HOST
+        raise Failure, gate
+      end
+      gate = "Public Dockerfile frontend metadata resolution failed; verify Docker Hub connectivity"
+      manifest = JSON.parse(runner.run("docker", "buildx", "imagetools", "inspect", frontend,
+        "--raw", capture: true, timeout: 30))
+      index = manifest.is_a?(Hash) && manifest["manifests"].is_a?(Array) && manifest["manifests"].any?
+      image = manifest.is_a?(Hash) && manifest["config"].is_a?(Hash) && manifest["layers"].is_a?(Array)
+      valid = manifest.is_a?(Hash) && manifest["schemaVersion"] == 2 && (index || image)
+      unless valid
+        raise Failure, gate
+      end
+    rescue Failure, SystemCallError, JSON::ParserError, TypeError => error
+      detail = if error.message.start_with?("Command timed out")
+        "; timed out"
+      elsif error.message.start_with?("Command output exceeded limit")
+        "; metadata exceeded 1 MiB"
+      else
+        ""
+      end
+      raise Failure, gate + detail
+    end
+    puts "Build preflight: default docker driver on pinned SSH endpoint; public frontend metadata resolved."
+  end
+
   def self.readiness(mode, sha, runner, secrets, allow_disk_recovery: false)
     status = preflight_probe(runner,
       "Production status check failed; verify SSH/Docker, cleanup --help and state markers", STATUS)
@@ -477,6 +548,7 @@ module ProsechoDeploy
       verify_identity!(runner)
       secrets = read_secrets(secrets_file)
       read_rock_key
+      build_preflight(runner) unless mode == "rollback"
       state = readiness(mode, sha, runner, secrets,
         allow_disk_recovery: %w[deploy install].include?(mode))
       puts "Production: #{state[:initialized] ? "initialized; app-role schema authenticated" : "uninitialized; explicit install required (no app-role schema proof)"}"

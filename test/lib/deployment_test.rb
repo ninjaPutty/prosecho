@@ -38,6 +38,11 @@ class DeploymentTest < ActiveSupport::TestCase
         when %w[bundle exec kamal version] then "2.12.0"
         when %w[docker --version] then "28.5.2,"
         when %w[docker buildx version] then "v0.29.1 "
+        when %w[docker buildx inspect --builder default] then "Driver: docker\nEndpoint: default"
+        when %w[docker context inspect default]
+          JSON.generate([{Endpoints: {docker: {Host: ProsechoDeploy::DOCKER_HOST}}}])
+        when %w[docker buildx imagetools inspect docker.io/docker/dockerfile:1 --raw]
+          JSON.generate(schemaVersion: 2, manifests: [{digest: "sha256:" + "b" * 64}])
         when %w[cloudflared --version] then "2026.5.2 "
         when ["ssh", ProsechoDeploy::HOST, ProsechoDeploy::STATUS]
           (mode == "install") ? "new" : "initialized"
@@ -411,6 +416,11 @@ class DeploymentTest < ActiveSupport::TestCase
       when %w[bundle exec kamal version] then "2.12.0"
       when %w[docker --version] then "Docker version 28.5.2,"
       when %w[docker buildx version] then "v0.29.1 "
+      when %w[docker buildx inspect --builder default] then "Driver: docker\nEndpoint: default"
+      when %w[docker context inspect default]
+        JSON.generate([{Endpoints: {docker: {Host: ProsechoDeploy::DOCKER_HOST}}}])
+      when %w[docker buildx imagetools inspect docker.io/docker/dockerfile:1 --raw]
+        JSON.generate(schemaVersion: 2, manifests: [{digest: "sha256:" + "b" * 64}])
       when %w[cloudflared --version] then "2026.5.2 "
       when %w[ssh-add -L]
         "ssh-ed25519 unrelated-public-key\nssh-ed25519 fake-public-key\n"
@@ -432,7 +442,12 @@ class DeploymentTest < ActiveSupport::TestCase
               ProsechoDeploy.stub(:read_rock_key, "synthetic-rock-key") do
                 ProsechoDeploy.stub(:readiness, state) do
                   ProsechoDeploy.stub(:deploy, ->(*args, **flags) { deployed << [args, flags] }) do
-                    File.stub(:read, "ssh-ed25519 fake-public-key\n") do
+                    original_read = File.method(:read)
+                    read = ->(path) {
+                      (path == ".devcontainer/production_deploy.pub") ?
+                        "ssh-ed25519 fake-public-key\n" : original_read.call(path)
+                    }
+                    File.stub(:read, read) do
                       File.stub(:stat, ->(path) { flunk "Unexpected credential stat: #{path}" }) do
                         File.stub(:exist?, true) do
                           output, warning = capture_io { ProsechoDeploy.main([]) }
@@ -624,6 +639,8 @@ class DeploymentTest < ActiveSupport::TestCase
   end
 
   test "a switched shared checkout cannot change the isolated checked build source" do
+    old_host = ENV["DOCKER_HOST"]
+    ENV.delete("DOCKER_HOST")
     Dir.mktmpdir do |source|
       runner = ProsechoDeploy::Runner.new
       runner.run("git", "init", source, capture: true)
@@ -649,6 +666,199 @@ class DeploymentTest < ActiveSupport::TestCase
       end
       assert_not File.exist?(stage), "only the operation's own stage is removed"
       assert_equal "candidate B\n", File.read(File.join(source, "artifact"))
+    end
+  ensure
+    old_host ? ENV["DOCKER_HOST"] = old_host : ENV.delete("DOCKER_HOST")
+  end
+
+  test "approved retained rollback skips build inputs and Docker Hub even when registry DNS is offline" do
+    old_host = ENV["DOCKER_HOST"]
+    ENV["DOCKER_HOST"] = ProsechoDeploy::DOCKER_HOST
+    commands = []
+    runner = Object.new
+    runner.define_singleton_method(:run) do |*command, **_options|
+      commands << command
+      case command
+      when %w[bundle exec kamal version] then "2.12.0"
+      when %w[docker --version] then "28.5.2,"
+      when %w[docker buildx version] then "v0.29.1 "
+      when %w[cloudflared --version] then "2026.5.2 "
+      when ["ssh", ProsechoDeploy::HOST, ProsechoDeploy::STATUS] then "initialized"
+      when ["ssh", ProsechoDeploy::HOST, ProsechoDeploy::CAPACITY_METADATA] then "4194304 2097152"
+      when ["ssh", ProsechoDeploy::HOST, ProsechoDeploy::SCHEMA] then ""
+      when ["ssh", ProsechoDeploy::HOST, ProsechoDeploy.artifact_script(SHA)] then "sha256:" + "b" * 64
+      when ["ssh", ProsechoDeploy::HOST, "docker inspect prosecho-web-#{SHA} >/dev/null"] then ""
+      when ["bin/check"] then ""
+      else
+        raise ProsechoDeploy::Failure, "Docker Hub DNS unavailable" if command.first == "docker"
+        raise "Unexpected command" unless command.first == "git"
+        command.include?("rev-parse") ? SHA : ""
+      end
+    end
+    candidate = ->(_source, _sha, &block) { block.call(runner) }
+    deployed = []
+    ProsechoDeploy::Runner.stub(:new, runner) do
+      ProsechoDeploy.stub(:with_candidate, candidate) do
+        ProsechoDeploy.stub(:verify_identity!, ->(*) { commands << ["agent-gate"] }) do
+          ProsechoDeploy.stub(:read_secrets, {"PGPASSWORD" => "synthetic-password"}) do
+            ProsechoDeploy.stub(:read_rock_key, "synthetic-rock") do
+              ProsechoDeploy.stub(:public_frontend_ref, -> { flunk "Rollback must not read build inputs" }) do
+                ProsechoDeploy.stub(:deploy, ->(mode, *) { deployed << mode }) do
+                  File.stub(:exist?, true) do
+                    Dir.stub(:glob, []) do
+                      capture_io { ProsechoDeploy.main(["rollback", SHA, "--allow-rollback"]) }
+                    end
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+    assert_equal ["rollback"], deployed
+    assert_equal [%w[docker --version], %w[docker buildx version]],
+      commands.select { |command| command.first == "docker" }
+    assert_includes commands, ["agent-gate"]
+    [ProsechoDeploy::STATUS, ProsechoDeploy::CAPACITY_METADATA, ProsechoDeploy::SCHEMA,
+      ProsechoDeploy.artifact_script(SHA), "docker inspect prosecho-web-#{SHA} >/dev/null"].each do |script|
+      assert_includes commands, ["ssh", ProsechoDeploy::HOST, script]
+    end
+    assert_includes commands, ["bin/check"]
+  ensure
+    old_host ? ENV["DOCKER_HOST"] = old_host : ENV.delete("DOCKER_HOST")
+  end
+
+  test "public Dockerfile contract recognizes tabs and rejects hidden private stages or ARG overrides" do
+    dockerfile = File.read("Dockerfile")
+    ruby_version = File.read(".ruby-version")
+    source = dockerfile
+    read = ->(path) { (path == "Dockerfile") ? source : ruby_version }
+    File.stub(:read, read) do
+      assert_equal "docker.io/docker/dockerfile:1", ProsechoDeploy.public_frontend_ref
+      source = dockerfile.gsub(/^FROM /, "FROM\t").sub(/^ARG /, "ARG\t")
+      assert_equal "docker.io/docker/dockerfile:1", ProsechoDeploy.public_frontend_ref
+      ["FROM\tprivate.example/final:1\n", "ARG\tRUBY_VERSION=9.9.9\n",
+        "FROM base # unsupported inline comment\n"].each do |extra|
+        source = dockerfile + extra
+        assert_raises(ProsechoDeploy::Failure) { ProsechoDeploy.public_frontend_ref }
+      end
+      source = dockerfile + "FROM\tprivate.example/final:1\n"
+      runner = Object.new
+      runner.define_singleton_method(:run) { |*| flunk "Invalid public inputs must fail before probes" }
+      assert_raises(ProsechoDeploy::Failure) { ProsechoDeploy.build_preflight(runner) }
+      source = dockerfile + "# FROM\tprivate.example/not-an-instruction:1\n"
+      assert_equal "docker.io/docker/dockerfile:1", ProsechoDeploy.public_frontend_ref
+    end
+  end
+
+  test "candidate Docker config bypasses broken helpers and restores caller scope on every exit" do
+    old_env = ENV.to_h.slice(*ProsechoDeploy::OPERATION_ENV)
+    runner = ProsechoDeploy::Runner.new
+    sha = runner.run("git", "-C", ProsechoDeploy::SOURCE, "rev-parse", "HEAD", capture: true)
+    Dir.mktmpdir do |directory|
+      caller_config = File.join(directory, "caller")
+      Dir.mkdir(caller_config, 0o700)
+      config_file = File.join(caller_config, "config.json")
+      contents = JSON.generate(credsStore: "broken", auths: {}, currentContext: "wrong")
+      File.write(config_file, contents, perm: 0o600)
+      File.write(File.join(directory, "docker-credential-broken"), "#!/bin/sh\nexit 255\n", perm: 0o700)
+      docker = File.join(directory, "docker")
+      File.write(docker, <<~RUBY, perm: 0o700)
+        #!/usr/bin/env ruby
+        require "json"
+        config = JSON.parse(File.read(File.join(ENV.fetch("DOCKER_CONFIG"), "config.json")))
+        exec("docker-credential-" + config["credsStore"]) if config["credsStore"]
+        abort "wrong route" unless ENV["DOCKER_HOST"] == #{ProsechoDeploy::DOCKER_HOST.inspect}
+        abort "inherited override" if %w[DOCKER_CONTEXT BUILDX_CONFIG BUILDX_BUILDER].any? { |key| ENV.key?(key) }
+        puts "public-metadata"
+      RUBY
+      ENV["PATH"] = "#{directory}:#{ENV.fetch("PATH")}"
+      ENV["DOCKER_CONFIG"] = caller_config
+      ENV.delete("DOCKER_HOST")
+      %w[DOCKER_CONTEXT BUILDX_CONFIG BUILDX_BUILDER].each { |key| ENV[key] = "caller-override" }
+      assert_raises(ProsechoDeploy::Failure) { runner.run(docker, capture: true) }
+      caller_env = ENV.to_h.slice(*ProsechoDeploy::OPERATION_ENV)
+      [:success, :failure, :timeout].each do |exit_kind|
+        operation = nil
+        exercise = -> {
+          ProsechoDeploy.with_candidate(ProsechoDeploy::SOURCE, sha) do |candidate_runner|
+            operation = ENV.fetch("TMPDIR")
+            private_config = ENV.fetch("DOCKER_CONFIG")
+            assert_equal 0o700, File.stat(private_config).mode & 0o777
+            assert_equal 0o600, File.stat(File.join(private_config, "config.json")).mode & 0o777
+            assert_equal({}, JSON.parse(File.read(File.join(private_config, "config.json"))))
+            assert_equal "public-metadata", candidate_runner.run(docker, capture: true)
+            ProsechoDeploy.with_candidate(ProsechoDeploy::SOURCE, sha) do
+              assert_not_equal private_config, ENV["DOCKER_CONFIG"]
+            end
+            assert_equal private_config, ENV["DOCKER_CONFIG"]
+            raise ProsechoDeploy::Failure, "synthetic failure" if exit_kind == :failure
+            candidate_runner.run("sleep", "10", capture: true, timeout: 0.05) if exit_kind == :timeout
+          end
+        }
+        (exit_kind == :success) ? exercise.call : assert_raises(ProsechoDeploy::Failure, &exercise)
+        assert_equal caller_env, ENV.to_h.slice(*ProsechoDeploy::OPERATION_ENV)
+        assert_equal contents, File.read(config_file)
+        assert_not File.exist?(operation)
+      end
+    end
+  ensure
+    ProsechoDeploy::OPERATION_ENV.each { |key| old_env.key?(key) ? ENV[key] = old_env[key] : ENV.delete(key) }
+  end
+
+  test "wrong explicit Docker host is rejected before any candidate or target command" do
+    old_host = ENV["DOCKER_HOST"]
+    ENV["DOCKER_HOST"] = "ssh://wrong-target"
+    ProsechoDeploy::Runner.stub(:new, -> { flunk "Wrong host must not start commands" }) do
+      error = assert_raises(ProsechoDeploy::Failure) do
+        ProsechoDeploy.with_candidate(ProsechoDeploy::SOURCE, SHA) { flunk "Wrong host must not yield" }
+      end
+      assert_includes error.message, "pinned Prosecho SSH alias"
+      assert_equal "ssh://wrong-target", ENV["DOCKER_HOST"]
+    end
+  ensure
+    old_host ? ENV["DOCKER_HOST"] = old_host : ENV.delete("DOCKER_HOST")
+  end
+
+  test "build preflight validates public source and labels bounded read-only metadata failures" do
+    commands = []
+    broken = nil
+    endpoint = ProsechoDeploy::DOCKER_HOST
+    metadata = JSON.generate(schemaVersion: 2, manifests: [{digest: "sha256:" + "b" * 64}])
+    runner = Object.new
+    runner.define_singleton_method(:run) do |*command, **options|
+      commands << command
+      raise "Unbounded probe" unless options == {capture: true, timeout: 30}
+      raise ProsechoDeploy::Failure, "synthetic-secret" if command.include?(broken)
+      case command
+      when %w[docker buildx inspect --builder default] then "Driver: docker\nEndpoint: default"
+      when %w[docker context inspect default]
+        JSON.generate([{Endpoints: {docker: {Host: endpoint}}}])
+      else metadata
+      end
+    end
+    output, = capture_io { ProsechoDeploy.build_preflight(runner) }
+    assert_includes output, "public frontend metadata resolved"
+    assert_equal [%w[docker buildx inspect --builder default], %w[docker context inspect default],
+      %w[docker buildx imagetools inspect docker.io/docker/dockerfile:1 --raw]], commands
+    {"buildx" => "Default builder endpoint/driver", "imagetools" => "Public Dockerfile frontend"}.each do |failure, label|
+      broken = failure
+      error = assert_raises(ProsechoDeploy::Failure) { ProsechoDeploy.build_preflight(runner) }
+      assert_includes error.message, label
+      assert_not_includes error.message, "synthetic-secret"
+    end
+    broken = nil
+    endpoint = "ssh://wrong-target"
+    assert_raises(ProsechoDeploy::Failure) { ProsechoDeploy.build_preflight(runner) }
+    endpoint = ProsechoDeploy::DOCKER_HOST
+    metadata = JSON.generate(schemaVersion: 2, manifests: "invalid-type")
+    assert_raises(ProsechoDeploy::Failure) { ProsechoDeploy.build_preflight(runner) }
+    metadata = "invalid-json synthetic-secret"
+    error = assert_raises(ProsechoDeploy::Failure) { ProsechoDeploy.build_preflight(runner) }
+    assert_not_includes error.message, "synthetic-secret"
+    File.stub(:read, "# syntax=private.example/frontend:1\n") do
+      assert_raises(ProsechoDeploy::Failure) { ProsechoDeploy.public_frontend_ref }
     end
   end
 

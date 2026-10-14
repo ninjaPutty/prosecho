@@ -87,6 +87,23 @@ and logout to the VM over SSH; the login password goes through stdin. The Buildx
 registry credentials, so this contract requires an unauthenticated, VM-loopback-only registry, not a
 private authenticated registry.
 
+Each deployment-helper operation gives Docker and all Kamal children a fresh mode-700
+`DOCKER_CONFIG` directory with a mode-600 minimal `{}` configuration. Caller credentials,
+editor `credsStore` helpers, authentication, and context metadata are never copied or changed.
+`DOCKER_CONTEXT`, `BUILDX_CONFIG`, and `BUILDX_BUILDER` are unset for the operation;
+`DOCKER_HOST` selects the pinned SSH alias above. A different explicit `DOCKER_HOST` is rejected,
+not redirected. All scoped environment values (including originally unset values) are restored
+on success, failure, and timeout, and only the operation directory is removed afterward.
+Buildx is discovered through the image's system CLI-plugin directory, not a caller plugin path.
+
+This contract supports the candidate's declared public `docker/dockerfile:1` frontend and
+`docker.io/library/ruby` base, with `RUBY_VERSION` matching `.ruby-version` (currently `3.4.7`).
+Changes to that narrow input contract fail preflight. Private bases are unsupported: add a reviewed,
+dedicated authenticated context before using them; do not strip credentials needed by private images.
+The source check tokenizes spaces and tabs for every `FROM` and `ARG` instruction. Extra stages,
+ARG overrides, inline instruction comments, and continuations are rejected conservatively before
+metadata probes or tests; commented-out instructions do not count as build inputs.
+
 ## Production Shell, Runner, and Console
 
 Run these helpers in the ordinary VS Code devcontainer. They connect as `deploy`
@@ -258,6 +275,18 @@ stdin with captured output; no person data is queried. Pending candidate migrati
 reported by comparison with the applied versions. Applied versions missing from a normal candidate
 are a schema mismatch, not permission to downgrade; review an explicit rollback instead.
 
+For build-capable modes (`check`, `plan`, deployment, and install), after tool, agent, and
+credential-file gates, build preflight reads the actual default builder's
+driver and endpoint using `docker buildx inspect --builder default`, without `--bootstrap`.
+Buildx 0.29.1 does not support `inspect --format`; the pinned text output must report the `docker`
+driver and `default` endpoint. `docker context inspect default` must resolve that endpoint to the
+pinned SSH host in the isolated configuration. It then resolves the validated candidate Dockerfile
+syntax reference with `docker buildx imagetools inspect REF --raw`. Each capture is bounded to
+30 seconds and 1 MiB, with labeled failures and suppressed command details. This reads public
+registry manifest metadata only: it does not pull image layers, log in, build, create/start a builder,
+or run cleanup. Successful frontend resolution does not prove a full application build or Ruby-base
+resolution; dependency fetching, build execution, and publication remain later deployment gates.
+
 `check` and `plan` never acquire the deployment/cleanup lock, run cleanup (including `--dry-run`),
 build images, migrate, or activate a release. They report an uninitialized target as requiring explicit
 install, without claiming app-role/schema readiness. `plan` prints planned actions, artifact reuse or
@@ -338,6 +367,10 @@ procedure.
 
 Rollback requires an explicit ref, retained recorded artifact/container, and `--allow-rollback` after
 schema-compatibility review, then uses `kamal rollback` without builds or reverse migrations.
+Rollback skips Dockerfile input validation, builder/context inspection, and public frontend metadata
+resolution. Docker Hub DNS or registry outages do not block retained-image rollback. Pinned local
+tool versions, the deployment agent, credential-file gates, target Docker/capacity/schema checks,
+immutable loopback artifact and retained-container guards, and isolated tests still apply.
 Newer already-applied schema versions are allowed only in this explicit rollback path; a rollback
 candidate that needs unapplied migrations is refused. First install
 has no previous app to roll back to: leave PG/data/artifacts intact, diagnose,
@@ -482,6 +515,26 @@ because its PID disappeared, or use a timer to clear it. If daemon activity cann
 be established confidently, retain the marker and stop deployments/cleanup.
 
 ## Local Verification
+
+On 2026-10-13, the private Docker configuration and metadata gates passed `bin/check`
+in the existing Linux app container: 264 tests / 1,865 assertions, no failures, errors, or skips.
+Three new focused regressions cover broken credential helpers, nested operation scopes,
+success/failure/timeout restoration, wrong-host rejection, and typed, bounded metadata probes.
+Read-only probes in Putty's existing app container confirmed that an empty private configuration
+discovers Buildx, inspects the built-in `docker` builder without bootstrap, and resolves the default
+context to the pinned SSH endpoint. The modified helper's complete live `plan` remains unverified:
+the existing Putty reverse-SSH bridge returned connection refused before the harness could be copied.
+No Putty tracked files, containers, production application, or database state were changed.
+
+The subsequent three review fixes passed focused tests (6 tests / 138 assertions) and full
+`bin/check` (266 tests / 1,888 assertions), with no failures, errors, or skips. Both ran with
+`DOCKER_HOST=unix:///nonproduction-fixture.sock` to exercise fixture isolation from caller routing.
+The hermetic approved-rollback regression forbids Dockerfile reads and makes any Docker metadata
+probe fail as an unavailable Docker Hub DNS dependency; retained rollback still reaches activation
+through the mocked deployment boundary after its required readiness guards and local tests.
+Public-input regressions reject a tab-separated private final stage before any metadata command,
+reject extra ARG overrides and inline instruction comments, and accept ordinary spaces/tabs and
+commented-out instructions. These tests perform no live rollback or production mutation.
 
 On 2026-10-08, the runner package built on the guest from the exact application
 cleanup source, SHA-256
